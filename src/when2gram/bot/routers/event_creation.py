@@ -56,7 +56,7 @@ async def _show_date_picker(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("new"))
 async def begin_new_event(message: Message, state: FSMContext) -> None:
-    if message.chat.type is not ChatType.PRIVATE:
+    if message.chat.type != ChatType.PRIVATE:
         await message.answer("Create events in a private chat with me using /new.")
         return
 

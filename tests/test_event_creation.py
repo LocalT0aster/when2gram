@@ -1,6 +1,10 @@
 from datetime import date
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -9,9 +13,25 @@ from when2gram.bot.keyboards.event_creation import (
     event_preview_keyboard,
     format_selected_days,
 )
+from when2gram.bot.routers.event_creation import NewEvent, begin_new_event
 from when2gram.db.models import Base, Event, User
 from when2gram.db.repositories import create_event
 from when2gram.db.session import create_engine, create_session_factory
+
+
+@pytest.mark.asyncio
+async def test_new_command_starts_in_a_private_chat() -> None:
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+    message = MagicMock()
+    message.chat.type = "private"
+    message.answer = AsyncMock()
+
+    await begin_new_event(message, state)
+
+    assert await state.get_state() == NewEvent.title.state
+    message.answer.assert_awaited_once_with("What should this event be called?")
+    await storage.close()
 
 
 def test_date_picker_marks_selection_and_disables_past_days() -> None:
