@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from when2gram.bot.routers import start_router
+from when2gram.bot.routers import event_creation_router, start_router
 from when2gram.config import get_settings
 from when2gram.db import create_engine, create_session_factory
 
@@ -25,6 +25,7 @@ async def main() -> None:
     bot = Bot(token=settings.bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["session_factory"] = session_factory
+    dispatcher.include_router(event_creation_router)
     dispatcher.include_router(start_router)
 
     try:

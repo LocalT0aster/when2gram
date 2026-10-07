@@ -7,13 +7,13 @@ name = "when2gram"
 version = "0.1.0"
 description = "Telegram-native When2Meet-style scheduling bot"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
   "aiogram>=3.28.2,<4",
   "aiosqlite>=0.20,<1",
   "alembic>=1.14,<2",
   "pydantic-settings>=2.7,<3",
-  "sqlalchemy>=2.0,<3",
+  "sqlalchemy[asyncio]>=2.0,<3",
 ]
 
 [dependency-groups]

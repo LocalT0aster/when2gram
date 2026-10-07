@@ -15,7 +15,7 @@ The project is intentionally Telegram-first: organizers create an event in the b
 - `uv` for dependency management
 - single-container `compose.yml` deployment
 
-The first implementation slice includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, and a `/grid` command for validating the dense Telegram keyboard UX before building the full event flow.
+The current implementation includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Each participant/day availability is represented as a 60-bit integer: bit 0 is 0
 
 ## Local development
 
-Requirements: Python 3.13+ and `uv`.
+Requirements: Python 3.14+ and `uv`.
 
 ```bash
 cp .env.example .env
@@ -49,7 +49,7 @@ uv run alembic upgrade head
 uv run python -m when2gram
 ```
 
-Try `/grid` in the bot's private chat to exercise the timetable prototype.
+Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection and an optional organizer notification threshold. Its share button opens inline mode with the event token; inline-result generation is the next implementation slice.
 
 Run checks:
 
@@ -71,10 +71,9 @@ The SQLite database is persisted in the named `when2gram-data` volume at `/data/
 
 ## Planned implementation order
 
-1. Validate the availability grid on Telegram mobile and desktop clients.
-2. Implement event creation and date selection.
-3. Persist draft/submitted participant responses.
-4. Add inline-mode invitations and deep links into PM.
-5. Persist `inline_message_id` values and refresh shared invitations after submissions.
-6. Add exactly-once response-threshold notifications.
-7. Add integration tests around Telegram callbacks and SQLite concurrency.
+1. Validate the availability grid and event-creation wizard on Telegram mobile and desktop clients.
+2. Persist draft/submitted participant responses.
+3. Add inline-mode invitation results and deep links into PM.
+4. Persist `inline_message_id` values and refresh shared invitations after submissions.
+5. Add exactly-once response-threshold notifications.
+6. Add integration tests around Telegram callbacks and SQLite concurrency.
