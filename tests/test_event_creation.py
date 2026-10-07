@@ -8,14 +8,16 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from when2gram.bot.keyboards.availability import availability_keyboard
 from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
     event_preview_keyboard,
     format_selected_days,
 )
 from when2gram.bot.routers.event_creation import NewEvent, begin_new_event
-from when2gram.db.models import Base, Event, User
-from when2gram.db.repositories import create_event
+from when2gram.bot.routers.inline import event_invitation_query
+from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
+from when2gram.db.repositories import create_event, save_submitted_availability
 from when2gram.db.session import create_engine, create_session_factory
 
 
@@ -32,6 +34,42 @@ async def test_new_command_starts_in_a_private_chat() -> None:
     assert await state.get_state() == NewEvent.title.state
     message.answer.assert_awaited_once_with("What should this event be called?")
     await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_inline_query_returns_an_event_invitation(monkeypatch) -> None:
+    event = Event(
+        id=3,
+        token="opaque-token",
+        organizer_id=42,
+        title="Thesis meeting",
+        days=[EventDay(day=date(2026, 10, 8))],
+    )
+    session = MagicMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=None)
+    session_factory = MagicMock(return_value=session_context)
+    inline_query = MagicMock()
+    inline_query.query = "event:opaque-token"
+    inline_query.answer = AsyncMock()
+    bot = MagicMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="when2grambot"))
+
+    monkeypatch.setattr(
+        "when2gram.bot.routers.inline.get_event_by_token", AsyncMock(return_value=event)
+    )
+    monkeypatch.setattr(
+        "when2gram.bot.routers.inline.submitted_response_count", AsyncMock(return_value=2)
+    )
+
+    await event_invitation_query(inline_query, bot, session_factory)
+
+    result = inline_query.answer.await_args.args[0][0]
+    assert result.id == "event:opaque-token"
+    assert result.reply_markup.inline_keyboard[0][0].url == (
+        "https://t.me/when2grambot?start=opaque-token"
+    )
 
 
 def test_date_picker_marks_selection_and_disables_past_days() -> None:
@@ -56,6 +94,20 @@ def test_preview_shares_the_event_token() -> None:
 def test_format_selected_days() -> None:
     days = [date(2026, 10, 8), date(2026, 10, 10)]
     assert format_selected_days(days) == "8 Oct 2026, 10 Oct 2026"
+
+
+def test_availability_keyboard_scopes_organizer_callbacks() -> None:
+    markup = availability_keyboard(
+        [0] * 60,
+        respondent_count=1,
+        callback_prefix="availability",
+        day_label="1/2",
+        can_go_next=True,
+    )
+
+    assert markup.inline_keyboard[1][1].callback_data == "availability:slot:0"
+    assert markup.inline_keyboard[-2][2].callback_data == "availability:next"
+    assert markup.inline_keyboard[-1][1].callback_data == "availability:done"
 
 
 @pytest.mark.asyncio
@@ -92,6 +144,28 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
     assert [event_day.day for event_day in persisted_event.days] == [first_day, second_day]
     assert organizer is not None
     assert organizer.username == "organizer"
+
+    async with session_factory() as session, session.begin():
+        await save_submitted_availability(
+            session,
+            event_id=event_id,
+            user_id=42,
+            masks=[1, 1 << 59],
+        )
+
+    async with session_factory() as session:
+        response = await session.get(Response, (event_id, 42))
+        availability_days = list(
+            await session.scalars(
+                select(AvailabilityDay)
+                .where(AvailabilityDay.user_id == 42)
+                .order_by(AvailabilityDay.event_day_id)
+            )
+        )
+
+    assert response is not None
+    assert response.submitted_at is not None
+    assert [availability_day.slot_mask for availability_day in availability_days] == [1, 1 << 59]
 
     await engine.dispose()
 

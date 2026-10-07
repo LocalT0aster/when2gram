@@ -15,7 +15,7 @@ The project is intentionally Telegram-first: organizers create an event in the b
 - `uv` for dependency management
 - single-container `compose.yml` deployment
 
-The current implementation includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events.
+The current implementation includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events. Organizers select availability by choosing a start and end slot for each range before sharing an inline invitation.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ uv run alembic upgrade head
 uv run python -m when2gram
 ```
 
-Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection and an optional organizer notification threshold. Its share button opens inline mode with the event token; inline-result generation is the next implementation slice.
+Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an optional organizer notification threshold, and per-day availability ranges. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` for the bot.
 
 Run checks:
 
@@ -72,8 +72,7 @@ The SQLite database is persisted in the named `when2gram-data` volume at `/data/
 ## Planned implementation order
 
 1. Validate the availability grid and event-creation wizard on Telegram mobile and desktop clients.
-2. Persist draft/submitted participant responses.
-3. Add inline-mode invitation results and deep links into PM.
-4. Persist `inline_message_id` values and refresh shared invitations after submissions.
-5. Add exactly-once response-threshold notifications.
-6. Add integration tests around Telegram callbacks and SQLite concurrency.
+2. Add a participant availability summary and best-overlap display.
+3. Refresh shared invitations after submissions.
+4. Add exactly-once response-threshold notifications.
+5. Add integration tests around Telegram callbacks and SQLite concurrency.

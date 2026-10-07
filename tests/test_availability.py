@@ -8,6 +8,7 @@ from when2gram.domain.availability import (
     clamp_mask,
     is_selected,
     slot_label,
+    toggle_range,
     toggle_slot,
 )
 
@@ -22,6 +23,22 @@ def test_toggle_slot_round_trip() -> None:
     mask = toggle_slot(0, 7)
     assert is_selected(mask, 7)
     assert toggle_slot(mask, 7) == 0
+
+
+def test_toggle_range_sets_or_clears_an_inclusive_interval() -> None:
+    mask = toggle_range(0, 5, 2)
+    assert [is_selected(mask, slot) for slot in range(2, 6)] == [True, True, True, True]
+    assert toggle_range(mask, 2, 5) == 0
+
+
+def test_toggle_range_clears_when_its_start_is_already_selected() -> None:
+    mask = toggle_slot(0, 1)
+    assert toggle_range(mask, 1, 3) == 0
+
+
+def test_toggle_range_uses_first_tapped_slot_when_selecting_backwards() -> None:
+    mask = toggle_slot(0, 5)
+    assert toggle_range(mask, 5, 2) == 0
 
 
 def test_clamp_mask_removes_bits_outside_day() -> None:

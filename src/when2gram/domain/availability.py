@@ -18,6 +18,16 @@ def toggle_slot(mask: int, slot: int) -> int:
     return mask ^ (1 << slot)
 
 
+def toggle_range(mask: int, start_slot: int, end_slot: int) -> int:
+    """Set or clear the inclusive range based on its start slot's current value."""
+    validate_slot(start_slot)
+    validate_slot(end_slot)
+    should_clear = is_selected(mask, start_slot)
+    start_slot, end_slot = sorted((start_slot, end_slot))
+    range_mask = ((1 << (end_slot - start_slot + 1)) - 1) << start_slot
+    return mask & ~range_mask if should_clear else mask | range_mask
+
+
 def set_slot(mask: int, slot: int, selected: bool) -> int:
     validate_slot(slot)
     bit = 1 << slot

@@ -2,12 +2,14 @@ from datetime import date
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
+from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from when2gram.bot.keyboards.availability import availability_keyboard
 from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
     event_preview_keyboard,
@@ -15,7 +17,13 @@ from when2gram.bot.keyboards.event_creation import (
     response_target_keyboard,
 )
 from when2gram.db.models import Event
-from when2gram.db.repositories import create_event
+from when2gram.db.repositories import (
+    create_event,
+    get_event_by_token,
+    save_submitted_availability,
+    upsert_user,
+)
+from when2gram.domain.availability import SLOTS_PER_DAY, slot_label, toggle_range
 
 router = Router(name=__name__)
 
@@ -25,6 +33,10 @@ class NewEvent(StatesGroup):
     dates = State()
     target = State()
     custom_target = State()
+
+
+class OrganizerAvailability(StatesGroup):
+    selecting = State()
 
 
 def _month_start(day: date) -> date:
@@ -62,6 +74,29 @@ async def begin_new_event(message: Message, state: FSMContext) -> None:
 
     await state.set_state(NewEvent.title)
     await message.answer("What should this event be called?")
+
+
+@router.message(CommandStart(deep_link=True))
+async def join_event(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if message.from_user is None or not command.args:
+        return
+    async with session_factory() as session, session.begin():
+        event = await get_event_by_token(session, command.args)
+        if event is None:
+            await message.answer("That invitation is no longer available.")
+            return
+        await upsert_user(
+            session,
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+        )
+    await _start_organizer_availability(message, state, event, replace=False)
 
 
 @router.message(NewEvent.title)
@@ -174,7 +209,7 @@ async def select_response_target(
     if target is not None and target < 1:
         await callback.answer("Invalid notification target", show_alert=True)
         return
-    await _create_and_preview(callback, state, session_factory, target)
+    await _create_and_collect_availability(callback, state, session_factory, target)
 
 
 @router.message(NewEvent.custom_target)
@@ -192,15 +227,11 @@ async def receive_custom_target(
         await message.answer("The notification target must be at least 1.")
         return
 
-    selected_days = _read_selected_days(await state.get_data())
     event = await _persist_event(message, state, session_factory, target)
-    await message.answer(
-        _event_preview_text(event.title, selected_days, target),
-        reply_markup=event_preview_keyboard(event.token),
-    )
+    await _start_organizer_availability(message, state, event, replace=False)
 
 
-async def _create_and_preview(
+async def _create_and_collect_availability(
     callback: CallbackQuery,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
@@ -209,13 +240,9 @@ async def _create_and_preview(
     if callback.message is None:
         await callback.answer()
         return
-    selected_days = _read_selected_days(await state.get_data())
     event = await _persist_event(callback, state, session_factory, target)
-    await callback.message.edit_text(
-        _event_preview_text(event.title, selected_days, target),
-        reply_markup=event_preview_keyboard(event.token),
-    )
-    await callback.answer("Event created")
+    await _start_organizer_availability(callback.message, state, event, replace=True)
+    await callback.answer()
 
 
 async def _persist_event(
@@ -240,8 +267,196 @@ async def _persist_event(
             days=selected_days,
             response_target=target,
         )
-    await state.clear()
     return event
+
+
+async def _start_organizer_availability(
+    message: Message,
+    state: FSMContext,
+    event: Event,
+    *,
+    replace: bool,
+) -> None:
+    selected_days = _read_selected_days(await state.get_data())
+    if not selected_days:
+        selected_days = [event_day.day for event_day in event.days]
+    await state.set_state(OrganizerAvailability.selecting)
+    await state.set_data(
+        {
+            "event_id": event.id,
+            "event_token": event.token,
+            "title": event.title,
+            "days": [day.isoformat() for day in selected_days],
+            "masks": [0] * len(selected_days),
+            "day_index": 0,
+            "range_start": None,
+            "response_target": event.response_target,
+        }
+    )
+    if replace:
+        await _show_organizer_availability(message, state)
+    else:
+        data = await state.get_data()
+        await message.answer(
+            _availability_prompt(_read_selected_days(data), 0, None),
+            reply_markup=_organizer_availability_keyboard(data),
+        )
+
+
+def _read_masks(data: dict[str, object]) -> list[int]:
+    masks = data.get("masks", [])
+    if not isinstance(masks, list) or not all(
+        isinstance(mask, int) and mask >= 0 for mask in masks
+    ):
+        return []
+    return masks
+
+
+def _day_index(data: dict[str, object], days: list[date]) -> int:
+    index = data.get("day_index", 0)
+    if not isinstance(index, int) or not 0 <= index < len(days):
+        return 0
+    return index
+
+
+def _availability_prompt(days: list[date], index: int, range_start: int | None) -> str:
+    prompt = (
+        "What times might work for you?\n\n"
+        f"{format_selected_days([days[index]])} ({index + 1}/{len(days)})\n"
+        "Tap a start time, then an end time."
+    )
+    if range_start is not None:
+        return f"{prompt}\n\nFrom {slot_label(range_start)} selected. Now tap the end time."
+    return prompt
+
+
+def _organizer_availability_keyboard(data: dict[str, object]):
+    days = _read_selected_days(data)
+    masks = _read_masks(data)
+    index = _day_index(data, days)
+    range_start = data.get("range_start")
+    if not isinstance(range_start, int):
+        range_start = None
+    return availability_keyboard(
+        [0] * SLOTS_PER_DAY,
+        respondent_count=1,
+        selected_mask=masks[index],
+        callback_prefix="availability",
+        range_start=range_start,
+        day_label=f"{index + 1}/{len(days)}",
+        can_go_previous=index > 0,
+        can_go_next=index < len(days) - 1,
+    )
+
+
+async def _show_organizer_availability(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    days = _read_selected_days(data)
+    index = _day_index(data, days)
+    range_start = data.get("range_start")
+    if not isinstance(range_start, int):
+        range_start = None
+    await message.edit_text(
+        _availability_prompt(days, index, range_start),
+        reply_markup=_organizer_availability_keyboard(data),
+    )
+
+
+@router.callback_query(OrganizerAvailability.selecting, F.data.startswith("availability:slot:"))
+async def toggle_organizer_slot(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    try:
+        slot = int(callback.data.rsplit(":", maxsplit=1)[1])
+    except ValueError:
+        await callback.answer("Invalid slot", show_alert=True)
+        return
+
+    data = await state.get_data()
+    days = _read_selected_days(data)
+    masks = _read_masks(data)
+    index = _day_index(data, days)
+    range_start = data.get("range_start")
+    if not isinstance(range_start, int):
+        await state.update_data(range_start=slot)
+        await _show_organizer_availability(callback.message, state)
+        await callback.answer("Start selected")
+        return
+
+    masks[index] = toggle_range(masks[index], range_start, slot)
+    await state.update_data(masks=masks, range_start=None)
+    await _show_organizer_availability(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(OrganizerAvailability.selecting, F.data == "availability:clear")
+async def clear_organizer_availability(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    days = _read_selected_days(data)
+    masks = _read_masks(data)
+    masks[_day_index(data, days)] = 0
+    await state.update_data(masks=masks, range_start=None)
+    await _show_organizer_availability(callback.message, state)
+    await callback.answer("Cleared")
+
+
+@router.callback_query(
+    OrganizerAvailability.selecting,
+    F.data.in_({"availability:previous", "availability:next"}),
+)
+async def change_availability_day(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    days = _read_selected_days(data)
+    index = _day_index(data, days)
+    direction = -1 if callback.data.endswith("previous") else 1
+    await state.update_data(
+        day_index=max(0, min(index + direction, len(days) - 1)),
+        range_start=None,
+    )
+    await _show_organizer_availability(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(OrganizerAvailability.selecting, F.data == "availability:done")
+async def submit_organizer_availability(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    days = _read_selected_days(data)
+    masks = _read_masks(data)
+    event_id = data.get("event_id")
+    if not isinstance(event_id, int) or len(days) != len(masks):
+        await callback.answer("Availability expired. Use /new to start again.", show_alert=True)
+        return
+
+    async with session_factory() as session, session.begin():
+        await save_submitted_availability(
+            session,
+            event_id=event_id,
+            user_id=callback.from_user.id,
+            masks=masks,
+        )
+    title = str(data["title"])
+    token = str(data["event_token"])
+    target = data.get("response_target")
+    await state.clear()
+    await callback.message.edit_text(
+        _event_preview_text(title, days, target if isinstance(target, int) else None),
+        reply_markup=event_preview_keyboard(token),
+    )
+    await callback.answer("Availability saved")
 
 
 def _event_preview_text(title: str, days: list[date], target: int | None) -> str:
