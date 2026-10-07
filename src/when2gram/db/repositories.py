@@ -17,6 +17,8 @@ async def create_event(
     organizer_first_name: str,
     title: str,
     days: Sequence[date],
+    start_minute: int,
+    end_minute: int,
     response_target: int | None,
 ) -> Event:
     """Create an event and its organizer record in the current transaction."""
@@ -26,6 +28,10 @@ async def create_event(
         raise ValueError("event title cannot be empty")
     if not unique_days:
         raise ValueError("an event needs at least one day")
+    if not 0 <= start_minute < end_minute <= 24 * 60:
+        raise ValueError("event time range must be between 00:00 and 24:00")
+    if start_minute % 60 or end_minute % 60:
+        raise ValueError("event time range must use whole hours")
     if response_target is not None and response_target < 1:
         raise ValueError("response target must be positive")
 
@@ -34,12 +40,16 @@ async def create_event(
         telegram_id=organizer_id,
         username=organizer_username,
         first_name=organizer_first_name,
+        preferred_start_hour=start_minute // 60,
+        preferred_end_hour=end_minute // 60,
     )
 
     event = Event(
         token=token_urlsafe(12),
         organizer_id=organizer_id,
         title=title,
+        start_minute=start_minute,
+        end_minute=end_minute,
         response_target=response_target,
         days=[EventDay(day=day) for day in unique_days],
     )
@@ -54,20 +64,44 @@ async def upsert_user(
     telegram_id: int,
     username: str | None,
     first_name: str,
+    preferred_start_hour: int | None = None,
+    preferred_end_hour: int | None = None,
 ) -> User:
     """Create or refresh a Telegram user in the current transaction."""
     user = await session.get(User, telegram_id)
+    if preferred_start_hour is not None or preferred_end_hour is not None:
+        if preferred_start_hour is None or preferred_end_hour is None:
+            raise ValueError("both preferred hours are required")
+        if not 0 <= preferred_start_hour < preferred_end_hour <= 24:
+            raise ValueError("preferred time range must be between 00:00 and 24:00")
+
     if user is None:
-        user = User(telegram_id=telegram_id, username=username, first_name=first_name)
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            preferred_start_hour=9 if preferred_start_hour is None else preferred_start_hour,
+            preferred_end_hour=24 if preferred_end_hour is None else preferred_end_hour,
+        )
         session.add(user)
     else:
         user.username = username
         user.first_name = first_name
+        if preferred_start_hour is not None and preferred_end_hour is not None:
+            user.preferred_start_hour = preferred_start_hour
+            user.preferred_end_hour = preferred_end_hour
 
     # Event has a scalar foreign key rather than an ORM relationship to User,
     # so ensure a newly created user exists before dependent rows are inserted.
     await session.flush()
     return user
+
+
+async def get_preferred_time_range(session: AsyncSession, user_id: int) -> tuple[int, int]:
+    user = await session.get(User, user_id)
+    if user is None:
+        return (9, 24)
+    return (user.preferred_start_hour, user.preferred_end_hour)
 
 
 async def save_submitted_availability(

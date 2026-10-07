@@ -15,11 +15,13 @@ from when2gram.bot.keyboards.event_creation import (
     event_preview_keyboard,
     format_selected_days,
     response_target_keyboard,
+    time_range_keyboard,
 )
 from when2gram.db.models import Event
 from when2gram.db.repositories import (
     create_event,
     get_event_by_token,
+    get_preferred_time_range,
     save_submitted_availability,
     upsert_user,
 )
@@ -31,6 +33,7 @@ router = Router(name=__name__)
 class NewEvent(StatesGroup):
     title = State()
     dates = State()
+    time_range = State()
     target = State()
     custom_target = State()
 
@@ -165,12 +168,106 @@ async def toggle_event_day(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(NewEvent.dates, F.data == "new:dates:done")
-async def finish_dates(callback: CallbackQuery, state: FSMContext) -> None:
+async def finish_dates(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     selected_days = _read_selected_days(await state.get_data())
-    if not selected_days:
+    if not selected_days or callback.from_user is None:
         await callback.answer("Select at least one date", show_alert=True)
         return
 
+    async with session_factory() as session:
+        start_hour, end_hour = await get_preferred_time_range(session, callback.from_user.id)
+    await state.set_state(NewEvent.time_range)
+    await state.update_data(
+        start_hour=start_hour,
+        end_hour=end_hour,
+        pending_start_hour=None,
+    )
+    if callback.message is not None:
+        await _show_time_range(callback.message, state)
+    await callback.answer()
+
+
+def _time_range_prompt(start_hour: int, end_hour: int, pending_start_hour: int | None) -> str:
+    prompt = (
+        "What times might work?\n\n"
+        f"Event hours: {start_hour:02d}:00 - {end_hour:02d}:00\n"
+        "Tap a start hour, then an end hour. Hours use the 24-hour clock."
+    )
+    if pending_start_hour is not None:
+        return f"{prompt}\n\nStart {pending_start_hour:02d}:00 selected. Now tap the end hour."
+    return prompt
+
+
+async def _show_time_range(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    start_hour = int(data["start_hour"])
+    end_hour = int(data["end_hour"])
+    pending_start_hour = data.get("pending_start_hour")
+    if not isinstance(pending_start_hour, int):
+        pending_start_hour = None
+    await message.edit_text(
+        _time_range_prompt(start_hour, end_hour, pending_start_hour),
+        reply_markup=time_range_keyboard(
+            start_hour,
+            end_hour,
+            pending_start_hour=pending_start_hour,
+        ),
+    )
+
+
+@router.callback_query(NewEvent.time_range, F.data == "new:time:reset")
+async def reset_time_range_selection(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.update_data(pending_start_hour=None)
+    await _show_time_range(callback.message, state)
+    await callback.answer("Selection reset")
+
+
+@router.callback_query(NewEvent.time_range, F.data.regexp(r"^new:time:\d+$"))
+async def select_time_range_hour(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    try:
+        hour = int(callback.data.rsplit(":", maxsplit=1)[1])
+    except ValueError:
+        await callback.answer("Invalid hour", show_alert=True)
+        return
+    if not 0 <= hour <= 24:
+        await callback.answer("Choose an hour from 00 to 24", show_alert=True)
+        return
+
+    data = await state.get_data()
+    pending_start_hour = data.get("pending_start_hour")
+    if not isinstance(pending_start_hour, int):
+        if hour == 24:
+            await callback.answer("24:00 can only be the end hour", show_alert=True)
+            return
+        await state.update_data(pending_start_hour=hour)
+        await _show_time_range(callback.message, state)
+        await callback.answer("Start hour selected")
+        return
+    if hour <= pending_start_hour:
+        await callback.answer("The end hour must be after the start hour", show_alert=True)
+        return
+
+    await state.update_data(
+        start_hour=pending_start_hour,
+        end_hour=hour,
+        pending_start_hour=None,
+    )
+    await _show_time_range(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(NewEvent.time_range, F.data == "new:time:done")
+async def finish_time_range(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewEvent.target)
     if callback.message is not None:
         await callback.message.edit_text(
@@ -209,7 +306,7 @@ async def select_response_target(
     if target is not None and target < 1:
         await callback.answer("Invalid notification target", show_alert=True)
         return
-    await _create_and_collect_availability(callback, state, session_factory, target)
+    await _create_and_preview(callback, state, session_factory, target)
 
 
 @router.message(NewEvent.custom_target)
@@ -227,11 +324,22 @@ async def receive_custom_target(
         await message.answer("The notification target must be at least 1.")
         return
 
+    selected_days = _read_selected_days(await state.get_data())
     event = await _persist_event(message, state, session_factory, target)
-    await _start_organizer_availability(message, state, event, replace=False)
+    await state.clear()
+    await message.answer(
+        _event_preview_text(
+            event.title,
+            selected_days,
+            target,
+            event.start_minute // 60,
+            event.end_minute // 60,
+        ),
+        reply_markup=event_preview_keyboard(event.token),
+    )
 
 
-async def _create_and_collect_availability(
+async def _create_and_preview(
     callback: CallbackQuery,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
@@ -240,9 +348,20 @@ async def _create_and_collect_availability(
     if callback.message is None:
         await callback.answer()
         return
+    selected_days = _read_selected_days(await state.get_data())
     event = await _persist_event(callback, state, session_factory, target)
-    await _start_organizer_availability(callback.message, state, event, replace=True)
-    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        _event_preview_text(
+            event.title,
+            selected_days,
+            target,
+            event.start_minute // 60,
+            event.end_minute // 60,
+        ),
+        reply_markup=event_preview_keyboard(event.token),
+    )
+    await callback.answer("Event created")
 
 
 async def _persist_event(
@@ -257,6 +376,10 @@ async def _persist_event(
 
     data = await state.get_data()
     selected_days = _read_selected_days(data)
+    start_hour = data.get("start_hour")
+    end_hour = data.get("end_hour")
+    if not isinstance(start_hour, int) or not isinstance(end_hour, int):
+        raise RuntimeError("event creation requires a time range")
     async with session_factory() as session, session.begin():
         event = await create_event(
             session,
@@ -265,6 +388,8 @@ async def _persist_event(
             organizer_first_name=user.first_name,
             title=str(data["title"]),
             days=selected_days,
+            start_minute=start_hour * 60,
+            end_minute=end_hour * 60,
             response_target=target,
         )
     return event
@@ -291,6 +416,8 @@ async def _start_organizer_availability(
             "day_index": 0,
             "range_start": None,
             "response_target": event.response_target,
+            "start_hour": event.start_minute // 60,
+            "end_hour": event.end_minute // 60,
         }
     )
     if replace:
@@ -451,19 +578,34 @@ async def submit_organizer_availability(
     title = str(data["title"])
     token = str(data["event_token"])
     target = data.get("response_target")
+    start_hour = data.get("start_hour")
+    end_hour = data.get("end_hour")
     await state.clear()
     await callback.message.edit_text(
-        _event_preview_text(title, days, target if isinstance(target, int) else None),
+        _event_preview_text(
+            title,
+            days,
+            target if isinstance(target, int) else None,
+            start_hour if isinstance(start_hour, int) else 9,
+            end_hour if isinstance(end_hour, int) else 24,
+        ),
         reply_markup=event_preview_keyboard(token),
     )
     await callback.answer("Availability saved")
 
 
-def _event_preview_text(title: str, days: list[date], target: int | None) -> str:
+def _event_preview_text(
+    title: str,
+    days: list[date],
+    target: int | None,
+    start_hour: int,
+    end_hour: int,
+) -> str:
     notification = (
         "No organizer notification" if target is None else f"Notify after {target} replies"
     )
     return (
-        f"Event created\n\n{title}\n{format_selected_days(days)}\n{notification}"
+        f"Event created\n\n{title}\n{format_selected_days(days)}\n"
+        f"{start_hour:02d}:00 - {end_hour:02d}:00\n{notification}"
         "\n\nShare it when ready."
     )

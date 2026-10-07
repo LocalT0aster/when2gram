@@ -13,6 +13,7 @@ from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
     event_preview_keyboard,
     format_selected_days,
+    time_range_keyboard,
 )
 from when2gram.bot.routers.event_creation import NewEvent, begin_new_event
 from when2gram.bot.routers.inline import event_invitation_query
@@ -43,6 +44,8 @@ async def test_inline_query_returns_an_event_invitation(monkeypatch) -> None:
         token="opaque-token",
         organizer_id=42,
         title="Thesis meeting",
+        start_minute=9 * 60,
+        end_minute=24 * 60,
         days=[EventDay(day=date(2026, 10, 8))],
     )
     session = MagicMock()
@@ -110,6 +113,13 @@ def test_availability_keyboard_scopes_organizer_callbacks() -> None:
     assert markup.inline_keyboard[-1][1].callback_data == "availability:done"
 
 
+def test_time_range_keyboard_supports_midnight_as_an_end_hour() -> None:
+    markup = time_range_keyboard(9, 24)
+
+    assert markup.inline_keyboard[-2][0].callback_data == "new:time:24"
+    assert markup.inline_keyboard[-1][1].callback_data == "new:time:done"
+
+
 @pytest.mark.asyncio
 async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path) -> None:
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
@@ -127,6 +137,8 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
             organizer_first_name="Ada",
             title="  Thesis meeting  ",
             days=[second_day, first_day, first_day],
+            start_minute=9 * 60,
+            end_minute=24 * 60,
             response_target=5,
         )
         event_id = event.id
@@ -139,11 +151,15 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
 
     assert persisted_event is not None
     assert persisted_event.title == "Thesis meeting"
+    assert persisted_event.start_minute == 9 * 60
+    assert persisted_event.end_minute == 24 * 60
     assert persisted_event.response_target == 5
     assert len(persisted_event.token) >= 16
     assert [event_day.day for event_day in persisted_event.days] == [first_day, second_day]
     assert organizer is not None
     assert organizer.username == "organizer"
+    assert organizer.preferred_start_hour == 9
+    assert organizer.preferred_end_hour == 24
 
     async with session_factory() as session, session.begin():
         await save_submitted_availability(
@@ -184,6 +200,8 @@ async def test_create_event_rejects_missing_days(tmp_path) -> None:
                 organizer_first_name="Ada",
                 title="Planning",
                 days=[],
+                start_minute=9 * 60,
+                end_minute=24 * 60,
                 response_target=None,
             )
 

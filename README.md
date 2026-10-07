@@ -15,7 +15,7 @@ The project is intentionally Telegram-first: organizers create an event in the b
 - `uv` for dependency management
 - single-container `compose.yml` deployment
 
-The current implementation includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events. Organizers select availability by choosing a start and end slot for each range before sharing an inline invitation.
+The current implementation includes the domain model, SQLite schema/migration, the 60-bit/day availability representation, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events. Organizers choose an hourly event window, defaulting to their most recently used range of 09:00–24:00, before sharing an inline invitation.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ uv run alembic upgrade head
 uv run python -m when2gram
 ```
 
-Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an optional organizer notification threshold, and per-day availability ranges. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` for the bot.
+Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an hourly event window from 00:00–24:00, and an optional organizer notification threshold. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` for the bot.
 
 Run checks:
 

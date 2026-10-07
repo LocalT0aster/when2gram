@@ -20,6 +20,8 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str] = mapped_column(String(255))
+    preferred_start_hour: Mapped[int] = mapped_column(Integer, default=9)
+    preferred_end_hour: Mapped[int] = mapped_column(Integer, default=24)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

@@ -73,6 +73,35 @@ def response_target_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def time_range_keyboard(
+    start_hour: int,
+    end_hour: int,
+    *,
+    pending_start_hour: int | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for first_hour in range(0, 24, 4):
+        row = []
+        for hour in range(first_hour, first_hour + 4):
+            style = "success" if start_hour <= hour < end_hour else None
+            if hour == pending_start_hour:
+                style = "primary"
+            row.append(
+                InlineKeyboardButton(
+                    text=f"{hour:02d}", callback_data=f"new:time:{hour}", style=style
+                )
+            )
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="24", callback_data="new:time:24")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Reset", callback_data="new:time:reset", style="danger"),
+            InlineKeyboardButton(text="Continue", callback_data="new:time:done", style="success"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def event_preview_keyboard(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

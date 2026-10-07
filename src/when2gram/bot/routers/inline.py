@@ -41,12 +41,13 @@ async def event_invitation_query(
         return
 
     dates = format_selected_days([event_day.day for event_day in event.days])
-    message_text = f"{event.title}\n{dates}\n\n{response_count} replied"
+    hours = f"{event.start_minute // 60:02d}:00 - {event.end_minute // 60:02d}:00"
+    message_text = f"{event.title}\n{dates}\n{hours}\n\n{response_count} replied"
     deep_link = f"https://t.me/{bot_user.username}?start={event.token}"
     result = InlineQueryResultArticle(
         id=f"event:{event.token}",
         title=event.title,
-        description=f"{dates} - {response_count} replied",
+        description=f"{dates}, {hours} - {response_count} replied",
         input_message_content=InputTextMessageContent(message_text=message_text),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[

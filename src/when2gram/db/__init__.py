@@ -2,6 +2,7 @@ from .models import AvailabilityDay, Base, Event, EventDay, InlineInvite, Respon
 from .repositories import (
     create_event,
     get_event_by_token,
+    get_preferred_time_range,
     save_submitted_availability,
     submitted_response_count,
     upsert_user,
@@ -20,6 +21,7 @@ __all__ = [
     "create_event",
     "create_session_factory",
     "get_event_by_token",
+    "get_preferred_time_range",
     "save_submitted_availability",
     "submitted_response_count",
     "upsert_user",
