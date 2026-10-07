@@ -20,6 +20,7 @@ from when2gram.bot.routers.inline import event_invitation_query
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
 from when2gram.db.repositories import create_event, save_submitted_availability
 from when2gram.db.session import create_engine, create_session_factory
+from when2gram.domain.availability import SLOTS_PER_DAY
 
 
 @pytest.mark.asyncio
@@ -101,7 +102,7 @@ def test_format_selected_days() -> None:
 
 def test_availability_keyboard_scopes_organizer_callbacks() -> None:
     markup = availability_keyboard(
-        [0] * 60,
+        [0] * SLOTS_PER_DAY,
         respondent_count=1,
         callback_prefix="availability",
         day_label="1/2",
@@ -111,6 +112,30 @@ def test_availability_keyboard_scopes_organizer_callbacks() -> None:
     assert markup.inline_keyboard[1][1].callback_data == "availability:slot:0"
     assert markup.inline_keyboard[-2][2].callback_data == "availability:next"
     assert markup.inline_keyboard[-1][1].callback_data == "availability:done"
+
+
+def test_availability_keyboard_pages_a_full_day_event() -> None:
+    markup = availability_keyboard(
+        [0] * SLOTS_PER_DAY,
+        respondent_count=1,
+        start_minute=0,
+        end_minute=24 * 60,
+    )
+
+    assert markup.inline_keyboard[1][0].text == "00"
+    assert markup.inline_keyboard[1][1].callback_data == "grid:slot:0"
+    assert markup.inline_keyboard[-2][1].callback_data == "grid:later"
+
+    later_markup = availability_keyboard(
+        [0] * SLOTS_PER_DAY,
+        respondent_count=1,
+        start_minute=0,
+        end_minute=24 * 60,
+        page_start=60,
+    )
+
+    assert later_markup.inline_keyboard[1][0].text == "15"
+    assert later_markup.inline_keyboard[1][1].callback_data == "grid:slot:60"
 
 
 def test_time_range_keyboard_supports_midnight_as_an_end_hour() -> None:
@@ -182,6 +207,15 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
     assert response is not None
     assert response.submitted_at is not None
     assert [availability_day.slot_mask for availability_day in availability_days] == [1, 1 << 59]
+
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="event time range"):
+            await save_submitted_availability(
+                session,
+                event_id=event_id,
+                user_id=42,
+                masks=[1 << 60, 0],
+            )
 
     await engine.dispose()
 

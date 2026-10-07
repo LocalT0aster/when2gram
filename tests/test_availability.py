@@ -13,10 +13,11 @@ from when2gram.domain.availability import (
 )
 
 
-def test_day_has_60_slots() -> None:
-    assert SLOTS_PER_DAY == 60
-    assert slot_label(0) == "09:00"
-    assert slot_label(59) == "23:45"
+def test_day_has_96_slots() -> None:
+    assert SLOTS_PER_DAY == 96
+    assert slot_label(0) == "00:00"
+    assert slot_label(95) == "23:45"
+    assert slot_label(0, start_minute=9 * 60) == "09:00"
 
 
 def test_toggle_slot_round_trip() -> None:

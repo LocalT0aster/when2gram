@@ -25,7 +25,7 @@ from when2gram.db.repositories import (
     save_submitted_availability,
     upsert_user,
 )
-from when2gram.domain.availability import SLOTS_PER_DAY, slot_label, toggle_range
+from when2gram.domain.availability import SLOT_MINUTES, SLOTS_PER_DAY, slot_label, toggle_range
 
 router = Router(name=__name__)
 
@@ -416,8 +416,9 @@ async def _start_organizer_availability(
             "day_index": 0,
             "range_start": None,
             "response_target": event.response_target,
-            "start_hour": event.start_minute // 60,
-            "end_hour": event.end_minute // 60,
+            "availability_start_minute": event.start_minute,
+            "availability_end_minute": event.end_minute,
+            "time_page_start": 0,
         }
     )
     if replace:
@@ -425,7 +426,9 @@ async def _start_organizer_availability(
     else:
         data = await state.get_data()
         await message.answer(
-            _availability_prompt(_read_selected_days(data), 0, None),
+            _availability_prompt(
+                _read_selected_days(data), 0, None, event.start_minute
+            ),
             reply_markup=_organizer_availability_keyboard(data),
         )
 
@@ -446,14 +449,19 @@ def _day_index(data: dict[str, object], days: list[date]) -> int:
     return index
 
 
-def _availability_prompt(days: list[date], index: int, range_start: int | None) -> str:
+def _availability_prompt(
+    days: list[date], index: int, range_start: int | None, start_minute: int
+) -> str:
     prompt = (
         "What times might work for you?\n\n"
         f"{format_selected_days([days[index]])} ({index + 1}/{len(days)})\n"
         "Tap a start time, then an end time."
     )
     if range_start is not None:
-        return f"{prompt}\n\nFrom {slot_label(range_start)} selected. Now tap the end time."
+        return (
+            f"{prompt}\n\nFrom {slot_label(range_start, start_minute=start_minute)} selected. "
+            "Now tap the end time."
+        )
     return prompt
 
 
@@ -464,6 +472,13 @@ def _organizer_availability_keyboard(data: dict[str, object]):
     range_start = data.get("range_start")
     if not isinstance(range_start, int):
         range_start = None
+    start_minute = data.get("availability_start_minute")
+    end_minute = data.get("availability_end_minute")
+    page_start = data.get("time_page_start")
+    if not isinstance(start_minute, int) or not isinstance(end_minute, int):
+        raise RuntimeError("availability requires an event time range")
+    if not isinstance(page_start, int):
+        page_start = 0
     return availability_keyboard(
         [0] * SLOTS_PER_DAY,
         respondent_count=1,
@@ -473,6 +488,9 @@ def _organizer_availability_keyboard(data: dict[str, object]):
         day_label=f"{index + 1}/{len(days)}",
         can_go_previous=index > 0,
         can_go_next=index < len(days) - 1,
+        start_minute=start_minute,
+        end_minute=end_minute,
+        page_start=page_start,
     )
 
 
@@ -483,8 +501,11 @@ async def _show_organizer_availability(message: Message, state: FSMContext) -> N
     range_start = data.get("range_start")
     if not isinstance(range_start, int):
         range_start = None
+    start_minute = data.get("availability_start_minute")
+    if not isinstance(start_minute, int):
+        raise RuntimeError("availability requires an event time range")
     await message.edit_text(
-        _availability_prompt(days, index, range_start),
+        _availability_prompt(days, index, range_start, start_minute),
         reply_markup=_organizer_availability_keyboard(data),
     )
 
@@ -504,6 +525,15 @@ async def toggle_organizer_slot(callback: CallbackQuery, state: FSMContext) -> N
     days = _read_selected_days(data)
     masks = _read_masks(data)
     index = _day_index(data, days)
+    start_minute = data.get("availability_start_minute")
+    end_minute = data.get("availability_end_minute")
+    if not isinstance(start_minute, int) or not isinstance(end_minute, int):
+        await callback.answer("Availability expired. Open the invitation again.", show_alert=True)
+        return
+    slot_count = (end_minute - start_minute) // SLOT_MINUTES
+    if not 0 <= slot < slot_count:
+        await callback.answer("That time is outside the event window", show_alert=True)
+        return
     range_start = data.get("range_start")
     if not isinstance(range_start, int):
         await state.update_data(range_start=slot)
@@ -513,6 +543,35 @@ async def toggle_organizer_slot(callback: CallbackQuery, state: FSMContext) -> N
 
     masks[index] = toggle_range(masks[index], range_start, slot)
     await state.update_data(masks=masks, range_start=None)
+    await _show_organizer_availability(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(
+    OrganizerAvailability.selecting,
+    F.data.in_({"availability:earlier", "availability:later"}),
+)
+async def change_availability_time_page(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    start_minute = data.get("availability_start_minute")
+    end_minute = data.get("availability_end_minute")
+    page_start = data.get("time_page_start", 0)
+    if (
+        not isinstance(start_minute, int)
+        or not isinstance(end_minute, int)
+        or not isinstance(page_start, int)
+    ):
+        await callback.answer("Availability expired. Open the invitation again.", show_alert=True)
+        return
+    slot_count = (end_minute - start_minute) // SLOT_MINUTES
+    next_page_start = page_start - 60 if callback.data.endswith("earlier") else page_start + 60
+    await state.update_data(
+        time_page_start=max(0, min(next_page_start, ((slot_count - 1) // 60) * 60)),
+        range_start=None,
+    )
     await _show_organizer_availability(callback.message, state)
     await callback.answer()
 

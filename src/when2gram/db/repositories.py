@@ -112,6 +112,9 @@ async def save_submitted_availability(
     masks: Sequence[int],
 ) -> None:
     """Save one participant's day masks and mark their response submitted."""
+    event = await session.get(Event, event_id)
+    if event is None:
+        raise ValueError("event does not exist")
     event_days = list(
         await session.scalars(
             select(EventDay).where(EventDay.event_id == event_id).order_by(EventDay.day)
@@ -121,6 +124,10 @@ async def save_submitted_availability(
         raise ValueError("availability masks must match the event's days")
     if any(mask < 0 for mask in masks):
         raise ValueError("availability masks cannot be negative")
+    slot_count = (event.end_minute - event.start_minute) // 15
+    allowed_mask = (1 << slot_count) - 1
+    if any(mask & ~allowed_mask for mask in masks):
+        raise ValueError("availability masks must fit within the event time range")
 
     response = await session.get(Response, (event_id, user_id))
     if response is None:

@@ -1,7 +1,7 @@
 from collections.abc import Iterable, Sequence
 from datetime import time
 
-START_MINUTE = 9 * 60
+START_MINUTE = 0
 END_MINUTE = 24 * 60
 SLOT_MINUTES = 15
 SLOTS_PER_DAY = (END_MINUTE - START_MINUTE) // SLOT_MINUTES
@@ -45,9 +45,9 @@ def clamp_mask(mask: int) -> int:
     return mask & ALL_SLOTS_MASK
 
 
-def slot_label(slot: int) -> str:
+def slot_label(slot: int, *, start_minute: int = START_MINUTE) -> str:
     validate_slot(slot)
-    minute_of_day = START_MINUTE + slot * SLOT_MINUTES
+    minute_of_day = start_minute + slot * SLOT_MINUTES
     hour, minute = divmod(minute_of_day, 60)
     return f"{hour:02d}:{minute:02d}"
 
