@@ -100,7 +100,12 @@ async def _show_date_picker(message: Message, state: FSMContext) -> None:
     await message.edit_text(
         "Select one or more dates, then tap Continue.\n"
         f"Selected: {format_selected_days(selected_days) or 'none'}",
-        reply_markup=date_picker_keyboard(month, selected_days),
+        reply_markup=date_picker_keyboard(
+            month,
+            selected_days,
+            back_callback="new:back:title",
+            cancel_callback="new:cancel",
+        ),
     )
 
 
@@ -122,15 +127,33 @@ async def list_organized_events(
     if message.chat.type != ChatType.PRIVATE or message.from_user is None:
         await message.answer("Manage events in a private chat with me using /events.")
         return
+    text, markup = await _organized_events_content(session_factory, message.from_user.id)
+    await message.answer(text, reply_markup=markup)
+
+
+async def _organized_events_content(
+    session_factory: async_sessionmaker[AsyncSession], organizer_id: int
+) -> tuple[str, object | None]:
     async with session_factory() as session:
-        events = await get_organized_events(session, message.from_user.id)
+        events = await get_organized_events(session, organizer_id)
     if not events:
-        await message.answer("You have no upcoming events. Use /new to create one.")
+        return "You have no upcoming events. Use /new to create one.", None
+    return "Your upcoming events:", organizer_events_keyboard(events)
+
+
+@router.callback_query(F.data == "events:list")
+async def return_to_organized_events(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
         return
-    await message.answer(
-        "Your upcoming events:",
-        reply_markup=organizer_events_keyboard(events),
-    )
+    text, markup = await _organized_events_content(session_factory, callback.from_user.id)
+    await state.clear()
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer()
 
 
 @router.message(CommandStart(deep_link=True))
@@ -202,6 +225,16 @@ async def change_month(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(NewEvent.dates, F.data == "new:back:title")
+async def return_to_event_title(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.set_state(NewEvent.title)
+    await callback.message.edit_text("What should this event be called?")
+    await callback.answer()
+
+
 @router.callback_query(NewEvent.dates, F.data.startswith("new:date:"))
 async def toggle_event_day(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None or callback.data is None:
@@ -253,6 +286,26 @@ async def finish_dates(
     await callback.answer()
 
 
+@router.callback_query(NewEvent.time_range, F.data == "new:back:dates")
+async def return_to_event_dates(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.set_state(NewEvent.dates)
+    await _show_date_picker(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "new:cancel")
+async def cancel_new_event(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await state.clear()
+    await callback.message.edit_text("Event creation cancelled.")
+    await callback.answer("Cancelled")
+
+
 def _time_range_prompt(start_hour: int, end_hour: int, pending_start_hour: int | None) -> str:
     prompt = (
         "What times might work?\n\n"
@@ -277,6 +330,8 @@ async def _show_time_range(message: Message, state: FSMContext) -> None:
             start_hour,
             end_hour,
             pending_start_hour=pending_start_hour,
+            back_callback="new:back:dates",
+            cancel_callback="new:cancel",
         ),
     )
 
@@ -336,7 +391,7 @@ async def finish_time_range(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(
             "Notify you after how many submitted replies?\n\n"
             "Choose an option or send any whole number.",
-            reply_markup=response_target_keyboard(),
+            reply_markup=response_target_keyboard(include_navigation=True),
         )
     await callback.answer()
 
@@ -355,8 +410,37 @@ async def receive_response_target(
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    value = (message.text or "").strip()
+    if value == "Cancel":
+        await state.clear()
+        await message.answer("Event creation cancelled.", reply_markup=ReplyKeyboardRemove())
+        return
+    if value == "Back":
+        data = await state.get_data()
+        start_hour = data.get("start_hour")
+        end_hour = data.get("end_hour")
+        if not isinstance(start_hour, int) or not isinstance(end_hour, int):
+            await state.clear()
+            await message.answer(
+                "Event creation expired. Use /new to start again.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+        await state.set_state(NewEvent.time_range)
+        await state.update_data(pending_start_hour=None)
+        await message.answer("Adjust the event hours.", reply_markup=ReplyKeyboardRemove())
+        await message.answer(
+            _time_range_prompt(start_hour, end_hour, None),
+            reply_markup=time_range_keyboard(
+                start_hour,
+                end_hour,
+                back_callback="new:back:dates",
+                cancel_callback="new:cancel",
+            ),
+        )
+        return
     try:
-        target = _response_target_from_text((message.text or "").strip())
+        target = _response_target_from_text(value)
     except ValueError:
         await message.answer("Choose an option or send a whole number, such as 12.")
         return
@@ -536,6 +620,7 @@ def _organizer_availability_keyboard(data: dict[str, object]):
         start_minute=start_minute,
         end_minute=end_minute,
         page_start=page_start,
+        back_callback="availability:back",
         withdraw_label=(
             "Skip"
             if data.get("is_creating") is True and data.get("is_organizer") is True
@@ -556,6 +641,35 @@ async def _show_organizer_availability(message: Message, state: FSMContext) -> N
         _availability_prompt(days, index, range_start, start_minute),
         reply_markup=_organizer_availability_keyboard(data),
     )
+
+
+@router.callback_query(OrganizerAvailability.selecting, F.data == "availability:back")
+async def cancel_availability_edit(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    token = data.get("event_token")
+    is_organizer = data.get("is_organizer") is True
+    if not isinstance(token, str):
+        await callback.answer("Availability expired", show_alert=True)
+        return
+    async with session_factory() as session:
+        event = await get_event_by_token(session, token)
+    await state.clear()
+    if event is None:
+        await callback.message.edit_text("That invitation is no longer available.")
+    elif is_organizer:
+        await _show_event_preview(callback.message, event)
+    else:
+        await callback.message.edit_text(
+            "Availability changes discarded.", reply_markup=event_responses_keyboard(event.token)
+        )
+    await callback.answer("Availability changes discarded")
 
 
 @router.callback_query(OrganizerAvailability.selecting, F.data.startswith("availability:slot:"))
@@ -656,6 +770,7 @@ async def _show_edit_date_picker(message: Message, state: FSMContext) -> None:
             month,
             selected_days,
             callback_prefix="edit",
+            back_callback=f"events:manage:{data['event_token']}",
             cancel_callback=f"event:edit:cancel:{data['event_token']}",
         ),
     )
@@ -676,6 +791,7 @@ async def _show_edit_time_range(message: Message, state: FSMContext) -> None:
             end_hour,
             pending_start_hour=pending_start_hour,
             callback_prefix="edit",
+            back_callback=f"events:manage:{data['event_token']}",
             cancel_callback=f"event:edit:cancel:{data['event_token']}",
         ),
     )
@@ -732,7 +848,9 @@ async def begin_event_edit(
     await state.set_data({"event_id": event.id, "event_token": event.token})
     if field == "title":
         await state.set_state(EventEdit.title)
-        await callback.message.edit_text("Send a new event title.")
+        await callback.message.edit_text(
+            "Send a new event title.", reply_markup=event_edit_cancel_keyboard(event.token)
+        )
     elif field == "dates":
         month = _month_start(date.today())
         await state.set_state(EventEdit.dates)
@@ -756,7 +874,8 @@ async def begin_event_edit(
             reply_markup=event_edit_cancel_keyboard(event.token),
         )
         await callback.message.answer(
-            "Choose an option or send any whole number.", reply_markup=response_target_keyboard()
+            "Choose an option or send any whole number.",
+            reply_markup=response_target_keyboard(include_navigation=True),
         )
     await callback.answer()
 
@@ -973,8 +1092,29 @@ async def receive_event_target_edit(
     session_factory: async_sessionmaker[AsyncSession],
     bot: Bot,
 ) -> None:
+    value = (message.text or "").strip()
+    if value in {"Back", "Cancel"}:
+        token = (await state.get_data()).get("event_token")
+        await state.clear()
+        await message.answer("Edit cancelled.", reply_markup=ReplyKeyboardRemove())
+        if not isinstance(token, str):
+            return
+        async with session_factory() as session:
+            event = await get_event_by_token(session, token)
+        if event is not None:
+            await message.answer(
+                _event_preview_text(
+                    event.title,
+                    [event_day.day for event_day in event.days],
+                    event.response_target,
+                    event.start_minute // 60,
+                    event.end_minute // 60,
+                ),
+                reply_markup=event_preview_keyboard(event.token),
+            )
+        return
     try:
-        target = _response_target_from_text((message.text or "").strip())
+        target = _response_target_from_text(value)
     except ValueError:
         await message.answer("Choose an option or send a whole number, such as 12.")
         return
@@ -1054,8 +1194,9 @@ async def delete_owned_event(
         await callback.answer("That event is no longer available.", show_alert=True)
         return
     await state.clear()
-    await callback.message.edit_text("Event deleted.")
-    await callback.answer()
+    text, markup = await _organized_events_content(session_factory, callback.from_user.id)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer("Event deleted")
 
 
 @router.callback_query(F.data.startswith("events:manage:"))

@@ -52,7 +52,7 @@ def availability_keyboard(
 
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(text="", callback_data="noop", style=HEADER_STYLE),
+            InlineKeyboardButton(text=":xx", callback_data="noop", style=HEADER_STYLE),
             InlineKeyboardButton(text=":00", callback_data="noop", style=HEADER_STYLE),
             InlineKeyboardButton(text=":15", callback_data="noop", style=HEADER_STYLE),
             InlineKeyboardButton(text=":30", callback_data="noop", style=HEADER_STYLE),
@@ -132,6 +132,8 @@ def availability_keyboard(
                     )
                 ]
             )
+        if back_callback is not None:
+            rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
     elif back_callback is not None:
         rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

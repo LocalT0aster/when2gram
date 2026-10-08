@@ -126,7 +126,7 @@ def test_event_edit_keyboard_scopes_all_actions_to_the_event() -> None:
         "event:edit:dates:opaque-token",
         "event:edit:time:opaque-token",
         "event:edit:target:opaque-token",
-        "event:manage:opaque-token",
+        "events:manage:opaque-token",
     ]
 
 
@@ -242,6 +242,36 @@ def test_response_target_reply_keyboard_accepts_common_and_custom_values() -> No
     assert _response_target_from_text("3 replies") == 3
     assert _response_target_from_text("12") == 12
     assert _response_target_from_text("Don't notify") is None
+
+
+def test_creation_keyboards_expose_back_and_cancel_actions() -> None:
+    date_buttons = [
+        button
+        for row in date_picker_keyboard(
+            date(2026, 10, 1),
+            [],
+            back_callback="new:back:title",
+            cancel_callback="new:cancel",
+        ).inline_keyboard
+        for button in row
+    ]
+    time_buttons = [
+        button
+        for row in time_range_keyboard(
+            9,
+            24,
+            back_callback="new:back:dates",
+            cancel_callback="new:cancel",
+        ).inline_keyboard
+        for button in row
+    ]
+    target_keyboard = response_target_keyboard(include_navigation=True)
+
+    assert "new:back:title" in [button.callback_data for button in date_buttons]
+    assert "new:cancel" in [button.callback_data for button in date_buttons]
+    assert "new:back:dates" in [button.callback_data for button in time_buttons]
+    assert "new:cancel" in [button.callback_data for button in time_buttons]
+    assert [button.text for button in target_keyboard.keyboard[-1]] == ["Back", "Cancel"]
 
 
 @pytest.mark.asyncio
@@ -620,7 +650,6 @@ async def test_manage_event_requires_organizer_ownership(tmp_path) -> None:
             end_minute=10 * 60,
             response_target=None,
         )
-
     stranger_callback = MagicMock()
     stranger_callback.data = f"events:manage:{event.token}"
     stranger_callback.from_user = MagicMock()
@@ -675,6 +704,19 @@ async def test_only_the_organizer_can_confirm_event_deletion(tmp_path) -> None:
             response_target=None,
         )
 
+    async with session_factory() as session, session.begin():
+        remaining_event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Another event",
+            days=[date.today() + timedelta(days=3)],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+
     stranger_callback = MagicMock()
     stranger_callback.data = f"event:delete:confirm:{event.token}"
     stranger_callback.from_user = MagicMock()
@@ -699,7 +741,10 @@ async def test_only_the_organizer_can_confirm_event_deletion(tmp_path) -> None:
     owner_callback.answer = AsyncMock()
 
     await delete_owned_event(owner_callback, state, session_factory)
-    owner_callback.message.edit_text.assert_awaited_once_with("Event deleted.")
+    owner_callback.message.edit_text.assert_awaited_once()
+    assert owner_callback.message.edit_text.await_args.args[0] == "Your upcoming events:"
+    markup = owner_callback.message.edit_text.await_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data == f"events:manage:{remaining_event.token}"
     async with session_factory() as session:
         assert await session.get(Event, event.id) is None
 
