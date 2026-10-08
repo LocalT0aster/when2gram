@@ -154,9 +154,7 @@ def test_cross_day_range_fills_every_intermediate_event_day() -> None:
         slot_count=60,
     )
 
-    assert masks[0] == ((1 << 56) - 1) << 4
-    assert masks[1] == (1 << 60) - 1
-    assert masks[2] == (1 << 20) - 1
+    assert masks == [((1 << 16) - 1) << 4] * 3
 
 
 @pytest.mark.asyncio

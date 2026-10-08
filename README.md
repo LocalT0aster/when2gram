@@ -49,7 +49,7 @@ uv run alembic upgrade head
 uv run python -m when2gram
 ```
 
-Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an hourly event window from 00:00–24:00, and an optional organizer notification threshold. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` for the bot.
+Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an hourly event window from 00:00–24:00, and an optional organizer notification threshold. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` and enable `/setinlinefeedback` so sent invitations can refresh their reply count.
 
 Run checks:
 

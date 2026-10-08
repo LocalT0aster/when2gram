@@ -37,6 +37,7 @@ from when2gram.domain.availability import (
 )
 
 router = Router(name=__name__)
+GRID_WIDTH_DELIMITER = "=" * 60
 
 
 class NewEvent(StatesGroup):
@@ -345,6 +346,7 @@ async def receive_custom_target(
         return
 
     event = await _persist_event(message, state, session_factory, target)
+    await message.answer(f"Notification target set to {target} replies.")
     await _start_event_availability(
         message,
         state,
@@ -473,6 +475,7 @@ def _availability_prompt(
     days: list[date], index: int, range_start: tuple[int, int] | None, start_minute: int
 ) -> str:
     prompt = (
+        f"{GRID_WIDTH_DELIMITER}\n"
         "What times might work for you?\n\n"
         f"{format_selected_days([days[index]])} ({index + 1}/{len(days)})\n"
         "Tap a start time, then an end time."
@@ -590,10 +593,9 @@ def _toggle_cross_day_range(
             start_day_index,
             start_slot,
         )
+    first_slot, last_slot = sorted((start_slot, end_slot))
+    range_mask = ((1 << (last_slot - first_slot + 1)) - 1) << first_slot
     for day_index in range(start_day_index, end_day_index + 1):
-        first_slot = start_slot if day_index == start_day_index else 0
-        last_slot = end_slot if day_index == end_day_index else slot_count - 1
-        range_mask = ((1 << (last_slot - first_slot + 1)) - 1) << first_slot
         masks[day_index] = (
             masks[day_index] & ~range_mask if should_clear else masks[day_index] | range_mask
         )
@@ -698,6 +700,7 @@ async def _show_event_responses(message: Message, state: FSMContext) -> None:
     ):
         raise RuntimeError("event response view expired")
     await message.edit_text(
+        f"{GRID_WIDTH_DELIMITER}\n"
         f"Availability responses: {respondent_count}\n\n"
         f"{format_selected_days([days[index]])} ({index + 1}/{len(days)})",
         reply_markup=availability_keyboard(
