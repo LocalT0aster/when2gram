@@ -25,6 +25,7 @@ from when2gram.bot.routers.event_creation import (
     delete_owned_event,
     list_organized_events,
     manage_organized_event,
+    receive_title,
 )
 from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_invitations
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
@@ -54,7 +55,36 @@ async def test_new_command_starts_in_a_private_chat() -> None:
     await begin_new_event(message, state)
 
     assert await state.get_state() == NewEvent.title.state
-    message.answer.assert_awaited_once_with("What should this event be called?")
+    message.answer.assert_awaited_once()
+    assert message.answer.await_args.args == ("What should this event be called?",)
+    assert message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == (
+        "new:cancel"
+    )
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_title_input_is_deleted_and_reuses_the_creation_prompt() -> None:
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+    await state.set_state(NewEvent.title)
+    await state.set_data({"prompt_message_id": 99})
+    message = MagicMock()
+    message.text = "Planning"
+    message.chat.id = 1
+    message.delete = AsyncMock()
+    message.answer = AsyncMock()
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock()
+
+    await receive_title(message, state, bot)
+
+    assert await state.get_state() == NewEvent.dates.state
+    message.delete.assert_awaited_once()
+    bot.edit_message_text.assert_awaited_once()
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == 99
+    assert bot.edit_message_text.await_args.kwargs["text"].startswith("Select one or more dates")
+    message.answer.assert_not_awaited()
     await storage.close()
 
 
@@ -267,11 +297,26 @@ def test_creation_keyboards_expose_back_and_cancel_actions() -> None:
     ]
     target_keyboard = response_target_keyboard(include_navigation=True)
 
-    assert "new:back:title" in [button.callback_data for button in date_buttons]
+    assert "new:back:title" not in [button.callback_data for button in date_buttons]
     assert "new:cancel" in [button.callback_data for button in date_buttons]
     assert "new:back:dates" in [button.callback_data for button in time_buttons]
     assert "new:cancel" in [button.callback_data for button in time_buttons]
     assert [button.text for button in target_keyboard.keyboard[-1]] == ["Back", "Cancel"]
+    assert [button.text for button in date_buttons[-2:]] == ["Cancel", "Continue"]
+    assert [button.text for button in time_buttons[-4:]] == ["Back", "Cancel", "Reset", "Continue"]
+
+    selected_date_buttons = [
+        button
+        for row in date_picker_keyboard(
+            date(2026, 10, 1),
+            [date(2026, 10, 8)],
+            back_callback="new:back:title",
+            cancel_callback="new:cancel",
+        ).inline_keyboard
+        for button in row
+    ]
+    assert "new:back:title" in [button.callback_data for button in selected_date_buttons]
+    assert [button.text for button in selected_date_buttons[-3:]] == ["Back", "Cancel", "Continue"]
 
 
 @pytest.mark.asyncio

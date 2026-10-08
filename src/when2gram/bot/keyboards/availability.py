@@ -112,28 +112,28 @@ def availability_keyboard(
         )
 
     if not read_only:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Clear day", callback_data=f"{callback_prefix}:clear", style="danger"
-                ),
-                InlineKeyboardButton(
-                    text="Done", callback_data=f"{callback_prefix}:done", style="success"
-                ),
-            ]
+        actions: list[InlineKeyboardButton] = []
+        if back_callback is not None:
+            actions.append(InlineKeyboardButton(text="Back", callback_data=back_callback))
+        actions.append(
+            InlineKeyboardButton(
+                text="Clear day", callback_data=f"{callback_prefix}:clear", style="danger"
+            )
+        )
+        actions.append(
+            InlineKeyboardButton(
+                text="Done", callback_data=f"{callback_prefix}:done", style="success"
+            )
         )
         if withdraw_label is not None:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=withdraw_label,
-                        callback_data=f"{callback_prefix}:withdraw",
-                        style="danger",
-                    )
-                ]
+            actions.append(
+                InlineKeyboardButton(
+                    text=withdraw_label,
+                    callback_data=f"{callback_prefix}:withdraw",
+                    style="danger",
+                )
             )
-        if back_callback is not None:
-            rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
+        rows.append(actions)
     elif back_callback is not None:
         rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -15,13 +15,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from when2gram.bot.keyboards.availability import availability_keyboard
 from when2gram.bot.keyboards.event_creation import (
+    HOME_TEXT,
     date_picker_keyboard,
     event_delete_keyboard,
     event_edit_cancel_keyboard,
     event_edit_keyboard,
     event_preview_keyboard,
     event_responses_keyboard,
+    event_title_keyboard,
     format_selected_days,
+    home_keyboard,
     organizer_events_keyboard,
     response_target_keyboard,
     time_range_keyboard,
@@ -109,14 +112,42 @@ async def _show_date_picker(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _begin_new_event(
+    state: FSMContext,
+    *,
+    message: Message,
+    replace: bool,
+) -> None:
+    await state.set_state(NewEvent.title)
+    if replace:
+        await message.edit_text(
+            "What should this event be called?", reply_markup=event_title_keyboard()
+        )
+        prompt_message_id = message.message_id
+    else:
+        prompt = await message.answer(
+            "What should this event be called?", reply_markup=event_title_keyboard()
+        )
+        prompt_message_id = prompt.message_id
+    await state.set_data({"prompt_message_id": prompt_message_id})
+
+
 @router.message(Command("new"))
 async def begin_new_event(message: Message, state: FSMContext) -> None:
     if message.chat.type != ChatType.PRIVATE:
         await message.answer("Create events in a private chat with me using /new.")
         return
 
-    await state.set_state(NewEvent.title)
-    await message.answer("What should this event be called?")
+    await _begin_new_event(state, message=message, replace=False)
+
+
+@router.callback_query(F.data == "home:new")
+async def begin_new_event_from_home(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await _begin_new_event(state, message=callback.message, replace=True)
+    await callback.answer()
 
 
 @router.message(Command("events"))
@@ -137,7 +168,7 @@ async def _organized_events_content(
     async with session_factory() as session:
         events = await get_organized_events(session, organizer_id)
     if not events:
-        return "You have no upcoming events. Use /new to create one.", None
+        return "You have no upcoming events. Use /new to create one.", home_keyboard()
     return "Your upcoming events:", organizer_events_keyboard(events)
 
 
@@ -188,22 +219,62 @@ async def join_event(
 
 
 @router.message(NewEvent.title)
-async def receive_title(message: Message, state: FSMContext) -> None:
+async def receive_title(message: Message, state: FSMContext, bot: Bot) -> None:
     title = (message.text or "").strip()
+    data = await state.get_data()
+    prompt_message_id = data.get("prompt_message_id")
+    if isinstance(prompt_message_id, int):
+        await message.delete()
     if not title:
-        await message.answer("Send a title for the event.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="Send a title for the event.",
+                reply_markup=event_title_keyboard(),
+            )
+        else:
+            await message.answer("Send a title for the event.")
         return
     if len(title) > 255:
-        await message.answer("The title must be 255 characters or fewer.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="The title must be 255 characters or fewer.",
+                reply_markup=event_title_keyboard(),
+            )
+        else:
+            await message.answer("The title must be 255 characters or fewer.")
         return
 
     month = _month_start(date.today())
     await state.set_state(NewEvent.dates)
-    await state.set_data({"title": title, "days": [], "visible_month": month.isoformat()})
-    await message.answer(
-        "Select one or more dates, then tap Continue.",
-        reply_markup=date_picker_keyboard(month, []),
+    await state.set_data(
+        {
+            "title": title,
+            "days": [],
+            "visible_month": month.isoformat(),
+            "prompt_message_id": prompt_message_id,
+        }
     )
+    if isinstance(prompt_message_id, int):
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text="Select one or more dates, then tap Continue.\nSelected: none",
+            reply_markup=date_picker_keyboard(
+                month,
+                [],
+                back_callback="new:back:title",
+                cancel_callback="new:cancel",
+            ),
+        )
+    else:
+        await message.answer(
+            "Select one or more dates, then tap Continue.",
+            reply_markup=date_picker_keyboard(month, [], cancel_callback="new:cancel"),
+        )
 
 
 @router.callback_query(NewEvent.dates, F.data.startswith("new:month:"))
@@ -231,7 +302,9 @@ async def return_to_event_title(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer()
         return
     await state.set_state(NewEvent.title)
-    await callback.message.edit_text("What should this event be called?")
+    await callback.message.edit_text(
+        "What should this event be called?", reply_markup=event_title_keyboard()
+    )
     await callback.answer()
 
 
@@ -302,7 +375,7 @@ async def cancel_new_event(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.clear()
-    await callback.message.edit_text("Event creation cancelled.")
+    await callback.message.edit_text(HOME_TEXT, reply_markup=home_keyboard())
     await callback.answer("Cancelled")
 
 
@@ -388,11 +461,12 @@ async def finish_time_range(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewEvent.target)
     if callback.message is not None:
         await callback.message.edit_text("Event hours selected.")
-        await callback.message.answer(
+        prompt = await callback.message.answer(
             "Notify you after how many submitted replies?\n\n"
             "Choose an option or send any whole number.",
             reply_markup=response_target_keyboard(include_navigation=True),
         )
+        await state.update_data(prompt_message_id=prompt.message_id)
     await callback.answer()
 
 
@@ -409,14 +483,25 @@ async def receive_response_target(
     message: Message,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
 ) -> None:
     value = (message.text or "").strip()
+    await message.delete()
+    data = await state.get_data()
+    prompt_message_id = data.get("prompt_message_id")
     if value == "Cancel":
         await state.clear()
-        await message.answer("Event creation cancelled.", reply_markup=ReplyKeyboardRemove())
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text=HOME_TEXT,
+                reply_markup=home_keyboard(),
+            )
+        else:
+            await message.answer(HOME_TEXT, reply_markup=home_keyboard())
         return
     if value == "Back":
-        data = await state.get_data()
         start_hour = data.get("start_hour")
         end_hour = data.get("end_hour")
         if not isinstance(start_hour, int) or not isinstance(end_hour, int):
@@ -428,32 +513,52 @@ async def receive_response_target(
             return
         await state.set_state(NewEvent.time_range)
         await state.update_data(pending_start_hour=None)
-        await message.answer("Adjust the event hours.", reply_markup=ReplyKeyboardRemove())
-        await message.answer(
-            _time_range_prompt(start_hour, end_hour, None),
-            reply_markup=time_range_keyboard(
-                start_hour,
-                end_hour,
-                back_callback="new:back:dates",
-                cancel_callback="new:cancel",
-            ),
-        )
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text=_time_range_prompt(start_hour, end_hour, None),
+                reply_markup=time_range_keyboard(
+                    start_hour,
+                    end_hour,
+                    back_callback="new:back:dates",
+                    cancel_callback="new:cancel",
+                ),
+            )
+        else:
+            await message.answer(
+                _time_range_prompt(start_hour, end_hour, None),
+                reply_markup=time_range_keyboard(
+                    start_hour,
+                    end_hour,
+                    back_callback="new:back:dates",
+                    cancel_callback="new:cancel",
+                ),
+            )
         return
     try:
         target = _response_target_from_text(value)
     except ValueError:
-        await message.answer("Choose an option or send a whole number, such as 12.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="Choose an option or send a whole number, such as 12.",
+            )
+        else:
+            await message.answer("Choose an option or send a whole number, such as 12.")
         return
     if target is not None and target < 1:
-        await message.answer("The notification target must be at least 1.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="The notification target must be at least 1.",
+            )
+        else:
+            await message.answer("The notification target must be at least 1.")
         return
     event = await _persist_event(message, state, session_factory, target)
-    confirmation = (
-        "Notifications disabled."
-        if target is None
-        else f"Notification target set to {target} replies."
-    )
-    await message.answer(confirmation, reply_markup=ReplyKeyboardRemove())
     await _start_event_availability(
         message,
         state,
@@ -462,6 +567,8 @@ async def receive_response_target(
         replace=False,
         is_organizer=True,
         is_creating=True,
+        replace_message_id=prompt_message_id if isinstance(prompt_message_id, int) else None,
+        bot=bot,
     )
 
 
@@ -505,6 +612,8 @@ async def _start_event_availability(
     replace: bool,
     is_organizer: bool,
     is_creating: bool,
+    replace_message_id: int | None = None,
+    bot: Bot | None = None,
 ) -> None:
     selected_days = _read_selected_days(await state.get_data())
     if not selected_days:
@@ -541,7 +650,15 @@ async def _start_event_availability(
             "is_creating": is_creating,
         }
     )
-    if replace:
+    if replace_message_id is not None and bot is not None:
+        data = await state.get_data()
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=replace_message_id,
+            text=_availability_prompt(_read_selected_days(data), 0, None, event.start_minute),
+            reply_markup=_organizer_availability_keyboard(data),
+        )
+    elif replace:
         await _show_organizer_availability(message, state)
     else:
         data = await state.get_data()
@@ -845,7 +962,13 @@ async def begin_event_edit(
         await callback.answer("That event is no longer available.", show_alert=True)
         return
     field = callback.data.split(":")[2]
-    await state.set_data({"event_id": event.id, "event_token": event.token})
+    await state.set_data(
+        {
+            "event_id": event.id,
+            "event_token": event.token,
+            "prompt_message_id": callback.message.message_id,
+        }
+    )
     if field == "title":
         await state.set_state(EventEdit.title)
         await callback.message.edit_text(
@@ -873,10 +996,11 @@ async def begin_event_edit(
             "Choose a new reply notification target.",
             reply_markup=event_edit_cancel_keyboard(event.token),
         )
-        await callback.message.answer(
+        prompt = await callback.message.answer(
             "Choose an option or send any whole number.",
             reply_markup=response_target_keyboard(include_navigation=True),
         )
+        await state.update_data(prompt_message_id=prompt.message_id)
     await callback.answer()
 
 
@@ -906,13 +1030,33 @@ async def receive_event_title_edit(
     bot: Bot,
 ) -> None:
     title = (message.text or "").strip()
+    data = await state.get_data()
+    prompt_message_id = data.get("prompt_message_id")
+    if isinstance(prompt_message_id, int):
+        await message.delete()
     if not title:
-        await message.answer("Send a title for the event.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="Send a title for the event.",
+                reply_markup=event_edit_cancel_keyboard(str(data.get("event_token", ""))),
+            )
+        else:
+            await message.answer("Send a title for the event.")
         return
     if len(title) > 255:
-        await message.answer("The title must be 255 characters or fewer.")
+        if isinstance(prompt_message_id, int):
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="The title must be 255 characters or fewer.",
+                reply_markup=event_edit_cancel_keyboard(str(data.get("event_token", ""))),
+            )
+        else:
+            await message.answer("The title must be 255 characters or fewer.")
         return
-    event_id = (await state.get_data()).get("event_id")
+    event_id = data.get("event_id")
     if not isinstance(event_id, int):
         await message.answer("That event is no longer available.")
         await state.clear()
@@ -925,17 +1069,30 @@ async def receive_event_title_edit(
         return
     await refresh_inline_invitations(bot, session_factory, event.id)
     await state.clear()
-    await message.answer("Event title updated.")
-    await message.answer(
-        _event_preview_text(
-            event.title,
-            [event_day.day for event_day in event.days],
-            event.response_target,
-            event.start_minute // 60,
-            event.end_minute // 60,
-        ),
-        reply_markup=event_preview_keyboard(event.token),
-    )
+    if isinstance(prompt_message_id, int):
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text=_event_preview_text(
+                event.title,
+                [event_day.day for event_day in event.days],
+                event.response_target,
+                event.start_minute // 60,
+                event.end_minute // 60,
+            ),
+            reply_markup=event_preview_keyboard(event.token),
+        )
+    else:
+        await message.answer(
+            _event_preview_text(
+                event.title,
+                [event_day.day for event_day in event.days],
+                event.response_target,
+                event.start_minute // 60,
+                event.end_minute // 60,
+            ),
+            reply_markup=event_preview_keyboard(event.token),
+        )
 
 
 @router.callback_query(EventEdit.dates, F.data.startswith("edit:month:"))
@@ -1093,25 +1250,41 @@ async def receive_event_target_edit(
     bot: Bot,
 ) -> None:
     value = (message.text or "").strip()
+    await message.delete()
+    data = await state.get_data()
+    prompt_message_id = data.get("prompt_message_id")
     if value in {"Back", "Cancel"}:
-        token = (await state.get_data()).get("event_token")
+        token = data.get("event_token")
         await state.clear()
-        await message.answer("Edit cancelled.", reply_markup=ReplyKeyboardRemove())
         if not isinstance(token, str):
             return
         async with session_factory() as session:
             event = await get_event_by_token(session, token)
         if event is not None:
-            await message.answer(
-                _event_preview_text(
-                    event.title,
-                    [event_day.day for event_day in event.days],
-                    event.response_target,
-                    event.start_minute // 60,
-                    event.end_minute // 60,
-                ),
-                reply_markup=event_preview_keyboard(event.token),
-            )
+            if isinstance(prompt_message_id, int):
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=prompt_message_id,
+                    text=_event_preview_text(
+                        event.title,
+                        [event_day.day for event_day in event.days],
+                        event.response_target,
+                        event.start_minute // 60,
+                        event.end_minute // 60,
+                    ),
+                    reply_markup=event_preview_keyboard(event.token),
+                )
+            else:
+                await message.answer(
+                    _event_preview_text(
+                        event.title,
+                        [event_day.day for event_day in event.days],
+                        event.response_target,
+                        event.start_minute // 60,
+                        event.end_minute // 60,
+                    ),
+                    reply_markup=event_preview_keyboard(event.token),
+                )
         return
     try:
         target = _response_target_from_text(value)
@@ -1121,7 +1294,7 @@ async def receive_event_target_edit(
     if target is not None and target < 1:
         await message.answer("The notification target must be at least 1.")
         return
-    event_id = (await state.get_data()).get("event_id")
+    event_id = data.get("event_id")
     if not isinstance(event_id, int):
         await message.answer(
             "That event is no longer available.", reply_markup=ReplyKeyboardRemove()
@@ -1143,17 +1316,30 @@ async def receive_event_target_edit(
         return
     await refresh_inline_invitations(bot, session_factory, event.id)
     await state.clear()
-    await message.answer("Reply notification updated.", reply_markup=ReplyKeyboardRemove())
-    await message.answer(
-        _event_preview_text(
-            event.title,
-            [event_day.day for event_day in event.days],
-            event.response_target,
-            event.start_minute // 60,
-            event.end_minute // 60,
-        ),
-        reply_markup=event_preview_keyboard(event.token),
-    )
+    if isinstance(prompt_message_id, int):
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text=_event_preview_text(
+                event.title,
+                [event_day.day for event_day in event.days],
+                event.response_target,
+                event.start_minute // 60,
+                event.end_minute // 60,
+            ),
+            reply_markup=event_preview_keyboard(event.token),
+        )
+    else:
+        await message.answer(
+            _event_preview_text(
+                event.title,
+                [event_day.day for event_day in event.days],
+                event.response_target,
+                event.start_minute // 60,
+                event.end_minute // 60,
+            ),
+            reply_markup=event_preview_keyboard(event.token),
+        )
 
 
 @router.callback_query(F.data.regexp(r"^event:delete:[^:]+$"))

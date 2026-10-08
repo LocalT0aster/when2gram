@@ -21,6 +21,24 @@ class _EventInfo(Protocol):
     days: Sequence[_EventDayInfo]
 
 
+HOME_TEXT = "When2Gram is a Telegram-native group availability planner."
+
+
+def home_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="New event", callback_data="home:new")],
+            [InlineKeyboardButton(text="My events", callback_data="events:list")],
+        ]
+    )
+
+
+def event_title_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Cancel", callback_data="new:cancel")]]
+    )
+
+
 def date_picker_keyboard(
     month: date,
     selected_days: Collection[date],
@@ -69,19 +87,19 @@ def date_picker_keyboard(
             )
         rows.append(row)
 
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="Continue", callback_data=f"{callback_prefix}:dates:done", style="success"
-            )
-        ]
-    )
-    if back_callback is not None:
-        rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
+    actions: list[InlineKeyboardButton] = []
+    if back_callback is not None and selected_days:
+        actions.append(InlineKeyboardButton(text="Back", callback_data=back_callback))
     if cancel_callback is not None:
-        rows.append(
-            [InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")]
+        actions.append(
+            InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")
         )
+    actions.append(
+        InlineKeyboardButton(
+            text="Continue", callback_data=f"{callback_prefix}:dates:done", style="success"
+        )
+    )
+    rows.append(actions)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -127,22 +145,24 @@ def time_range_keyboard(
             )
         rows.append(row)
     rows.append([InlineKeyboardButton(text="24", callback_data=f"{callback_prefix}:time:24")])
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="Reset", callback_data=f"{callback_prefix}:time:reset", style="danger"
-            ),
-            InlineKeyboardButton(
-                text="Continue", callback_data=f"{callback_prefix}:time:done", style="success"
-            ),
-        ]
-    )
+    actions: list[InlineKeyboardButton] = []
     if back_callback is not None:
-        rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
+        actions.append(InlineKeyboardButton(text="Back", callback_data=back_callback))
     if cancel_callback is not None:
-        rows.append(
-            [InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")]
+        actions.append(
+            InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")
         )
+    actions.append(
+        InlineKeyboardButton(
+            text="Reset", callback_data=f"{callback_prefix}:time:reset", style="danger"
+        )
+    )
+    actions.append(
+        InlineKeyboardButton(
+            text="Continue", callback_data=f"{callback_prefix}:time:done", style="success"
+        )
+    )
+    rows.append(actions)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

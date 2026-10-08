@@ -16,6 +16,13 @@ def test_editable_keyboard_can_return_without_submitting() -> None:
         [0] * SLOTS_PER_DAY,
         respondent_count=1,
         back_callback="availability:back",
+        withdraw_label="Skip",
     )
 
+    assert [button.text for button in markup.inline_keyboard[-1]] == [
+        "Back",
+        "Clear day",
+        "Done",
+        "Skip",
+    ]
     assert markup.inline_keyboard[-1][0].callback_data == "availability:back"
