@@ -247,6 +247,33 @@ async def get_event_availability_masks(
     return await submitted_response_count(session, event_id), masks_by_day
 
 
+async def get_slot_respondents(
+    session: AsyncSession, *, event_id: int, day: date, slot: int
+) -> list[tuple[str | None, str, bool]]:
+    """Return submitted respondents and whether each marked one event slot."""
+    rows = await session.execute(
+        select(User.username, User.first_name, AvailabilityDay.slot_mask)
+        .join(Response, Response.user_id == User.telegram_id)
+        .join(
+            EventDay,
+            and_(EventDay.event_id == Response.event_id, EventDay.day == day),
+        )
+        .outerjoin(
+            AvailabilityDay,
+            and_(
+                AvailabilityDay.event_day_id == EventDay.id,
+                AvailabilityDay.user_id == User.telegram_id,
+            ),
+        )
+        .where(Response.event_id == event_id, Response.submitted_at.is_not(None))
+        .order_by(User.first_name, User.telegram_id)
+    )
+    return [
+        (username, first_name, bool(int(mask or 0) & (1 << slot)))
+        for username, first_name, mask in rows
+    ]
+
+
 async def get_inline_invite_message_ids(session: AsyncSession, event_id: int) -> list[str]:
     return list(
         await session.scalars(

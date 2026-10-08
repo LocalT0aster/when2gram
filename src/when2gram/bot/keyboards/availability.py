@@ -35,6 +35,7 @@ def availability_keyboard(
     end_minute: int = 24 * 60,
     page_start: int = 0,
     read_only: bool = False,
+    slots_are_clickable: bool = False,
     back_callback: str | None = None,
     withdraw_label: str | None = None,
 ) -> InlineKeyboardMarkup:
@@ -69,7 +70,11 @@ def availability_keyboard(
             row.append(
                 InlineKeyboardButton(
                     text=f"{marker}{count}",
-                    callback_data="noop" if read_only else f"{callback_prefix}:slot:{slot}",
+                    callback_data=(
+                        f"{callback_prefix}:slot:{slot}"
+                        if not read_only or slots_are_clickable
+                        else "noop"
+                    ),
                     style=_availability_style(count, respondent_count),
                 )
             )

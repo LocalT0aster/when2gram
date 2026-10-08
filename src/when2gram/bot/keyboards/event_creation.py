@@ -127,5 +127,17 @@ def event_preview_keyboard(token: str) -> InlineKeyboardMarkup:
     )
 
 
+def event_responses_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="View availability", callback_data=f"event:responses:{token}"
+                )
+            ]
+        ]
+    )
+
+
 def format_selected_days(days: Sequence[date]) -> str:
     return ", ".join(f"{day.day} {day:%b %Y}" for day in days)

@@ -26,6 +26,7 @@ from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
 from when2gram.db.repositories import (
     create_event,
+    get_slot_respondents,
     save_submitted_availability,
     upsert_user,
     withdraw_submitted_availability,
@@ -351,6 +352,16 @@ async def test_submission_notifies_once_after_the_response_target(tmp_path) -> N
     assert second.target_reached
     assert repeated.response_count == 2
     assert not repeated.target_reached
+
+    async with session_factory() as session:
+        respondents = await get_slot_respondents(
+            session,
+            event_id=event_id,
+            day=event_day,
+            slot=95,
+        )
+
+    assert respondents == [("organizer", "Ada", True), ("guest", "Grace", False)]
 
     await engine.dispose()
 

@@ -6,13 +6,20 @@ from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardRemove,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from when2gram.bot.keyboards.availability import availability_keyboard
 from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
     event_preview_keyboard,
+    event_responses_keyboard,
     format_selected_days,
     response_target_keyboard,
     time_range_keyboard,
@@ -24,6 +31,7 @@ from when2gram.db.repositories import (
     get_event_availability_masks,
     get_event_by_token,
     get_preferred_time_range,
+    get_slot_respondents,
     get_user_availability_masks,
     save_submitted_availability,
     upsert_user,
@@ -618,15 +626,20 @@ async def view_event_responses(
     if callback.message is None:
         await callback.answer()
         return
-    event = await _get_owned_event(callback, session_factory)
-    if event is None:
-        await callback.answer("Only the organizer can view responses", show_alert=True)
+    if callback.data is None or callback.from_user is None:
+        await callback.answer()
         return
+    token = callback.data.rsplit(":", maxsplit=1)[1]
     async with session_factory() as session:
+        event = await get_event_by_token(session, token)
+        if event is None:
+            await callback.answer("That invitation is no longer available.", show_alert=True)
+            return
         respondent_count, masks_by_day = await get_event_availability_masks(session, event.id)
     await state.set_state(EventResponses.viewing)
     await state.set_data(
         {
+            "event_id": event.id,
             "event_token": event.token,
             "title": event.title,
             "days": [event_day.day.isoformat() for event_day in event.days],
@@ -637,6 +650,7 @@ async def view_event_responses(
             "masks_by_day": masks_by_day,
             "day_index": 0,
             "time_page_start": 0,
+            "is_organizer": callback.from_user.id == event.organizer_id,
         }
     )
     await _show_event_responses(callback.message, state)
@@ -685,9 +699,83 @@ async def _show_event_responses(message: Message, state: FSMContext) -> None:
             end_minute=end_minute,
             page_start=page_start,
             read_only=True,
+            slots_are_clickable=True,
             back_callback="responses:back",
         ),
     )
+
+
+def _respondent_label(username: str | None, first_name: str) -> str:
+    return f"@{username}" if username else first_name
+
+
+@router.callback_query(EventResponses.viewing, F.data.regexp(r"^responses:slot:\d+$"))
+async def show_slot_respondents(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None or callback.data is None:
+        await callback.answer()
+        return
+    try:
+        slot = int(callback.data.rsplit(":", maxsplit=1)[1])
+    except ValueError:
+        await callback.answer("Invalid time slot", show_alert=True)
+        return
+    data = await state.get_data()
+    event_id = data.get("event_id")
+    days = _read_selected_days(data)
+    index = _day_index(data, days)
+    start_minute = data.get("availability_start_minute")
+    end_minute = data.get("availability_end_minute")
+    if (
+        not isinstance(event_id, int)
+        or not isinstance(start_minute, int)
+        or not isinstance(end_minute, int)
+        or not 0 <= slot < (end_minute - start_minute) // SLOT_MINUTES
+    ):
+        await callback.answer("Response view expired", show_alert=True)
+        return
+    async with session_factory() as session:
+        respondents = await get_slot_respondents(
+            session,
+            event_id=event_id,
+            day=days[index],
+            slot=slot,
+        )
+    available = [
+        _respondent_label(username, first_name)
+        for username, first_name, marked in respondents
+        if marked
+    ]
+    unavailable = [
+        _respondent_label(username, first_name)
+        for username, first_name, marked in respondents
+        if not marked
+    ]
+    await callback.message.edit_text(
+        f"{GRID_WIDTH_DELIMITER}\n"
+        f"{format_selected_days([days[index]])} at "
+        f"{slot_label(slot, start_minute=start_minute)}\n\n"
+        f"Available:\n{chr(10).join(available) or 'Nobody'}\n\n"
+        f"Not available:\n{chr(10).join(unavailable) or 'Nobody'}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Back", callback_data="responses:slot-back")]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(EventResponses.viewing, F.data == "responses:slot-back")
+async def return_to_response_grid(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    await _show_event_responses(callback.message, state)
+    await callback.answer()
 
 
 @router.callback_query(
@@ -747,17 +835,24 @@ async def return_to_event_preview(callback: CallbackQuery, state: FSMContext) ->
     target = data.get("response_target")
     start_minute = data.get("availability_start_minute")
     end_minute = data.get("availability_end_minute")
+    is_organizer = data.get("is_organizer") is True
     await state.clear()
-    await callback.message.edit_text(
-        _event_preview_text(
-            title,
-            days,
-            target if isinstance(target, int) else None,
-            start_minute // 60 if isinstance(start_minute, int) else 9,
-            end_minute // 60 if isinstance(end_minute, int) else 24,
-        ),
-        reply_markup=event_preview_keyboard(token),
-    )
+    if is_organizer:
+        await callback.message.edit_text(
+            _event_preview_text(
+                title,
+                days,
+                target if isinstance(target, int) else None,
+                start_minute // 60 if isinstance(start_minute, int) else 9,
+                end_minute // 60 if isinstance(end_minute, int) else 24,
+            ),
+            reply_markup=event_preview_keyboard(token),
+        )
+    else:
+        await callback.message.edit_text(
+            "Availability summary closed.",
+            reply_markup=event_responses_keyboard(token),
+        )
     await callback.answer()
 
 
@@ -932,7 +1027,10 @@ async def submit_organizer_availability(
             reply_markup=event_preview_keyboard(token),
         )
     else:
-        await callback.message.edit_text("Availability saved. Thanks for replying.")
+        await callback.message.edit_text(
+            "Availability saved. Thanks for replying.",
+            reply_markup=event_responses_keyboard(token),
+        )
     await callback.answer("Availability saved")
 
 
