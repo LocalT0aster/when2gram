@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from secrets import token_urlsafe
 
 from sqlalchemy import and_, delete, func, select, update
@@ -21,6 +21,17 @@ class TargetNotification:
     organizer_id: int
     event_title: str
     response_count: int
+
+
+def event_ends_at(event: Event) -> datetime:
+    """Return the server-local end timestamp for an event with loaded days."""
+    if not event.days:
+        raise ValueError("event has no days")
+    return datetime.combine(event.days[-1].day, time.min) + timedelta(minutes=event.end_minute)
+
+
+def event_is_expired(event: Event, *, now: datetime | None = None) -> bool:
+    return event_ends_at(event) <= (datetime.now() if now is None else now)
 
 
 async def create_event(
@@ -124,6 +135,7 @@ async def save_submitted_availability(
     event_id: int,
     user_id: int,
     masks: Sequence[int],
+    days: Sequence[date] | None = None,
 ) -> SubmissionResult:
     """Save one participant's day masks and mark their response submitted."""
     event = await session.get(Event, event_id)
@@ -134,7 +146,15 @@ async def save_submitted_availability(
             select(EventDay).where(EventDay.event_id == event_id).order_by(EventDay.day)
         )
     )
-    if len(masks) != len(event_days):
+    selected_days = event_days
+    if days is not None:
+        requested_days = set(days)
+        if any(day < date.today() for day in requested_days):
+            raise ValueError("cannot submit availability for passed days")
+        selected_days = [event_day for event_day in event_days if event_day.day in requested_days]
+        if len(selected_days) != len(requested_days):
+            raise ValueError("availability days must belong to the event")
+    if len(masks) != len(selected_days):
         raise ValueError("availability masks must match the event's days")
     if any(mask < 0 for mask in masks):
         raise ValueError("availability masks cannot be negative")
@@ -149,7 +169,7 @@ async def save_submitted_availability(
         session.add(response)
     response.submitted_at = utc_now()
 
-    for event_day, mask in zip(event_days, masks, strict=True):
+    for event_day, mask in zip(selected_days, masks, strict=True):
         availability = await session.get(AvailabilityDay, (event_day.id, user_id))
         if availability is None:
             session.add(
@@ -201,10 +221,43 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     )
 
 
+async def get_organized_events(
+    session: AsyncSession, organizer_id: int, *, now: datetime | None = None
+) -> list[Event]:
+    events = list(
+        await session.scalars(
+            select(Event)
+            .options(selectinload(Event.days))
+            .where(Event.organizer_id == organizer_id)
+        )
+    )
+    current_time = datetime.now() if now is None else now
+    return sorted(
+        (event for event in events if not event_is_expired(event, now=current_time)),
+        key=event_ends_at,
+    )
+
+
+async def delete_expired_events(
+    session: AsyncSession, *, now: datetime | None = None
+) -> int:
+    events = list(await session.scalars(select(Event).options(selectinload(Event.days))))
+    current_time = datetime.now() if now is None else now
+    expired_events = [event for event in events if event_is_expired(event, now=current_time)]
+    for event in expired_events:
+        await session.delete(event)
+    await session.flush()
+    return len(expired_events)
+
+
 async def get_user_availability_masks(
-    session: AsyncSession, *, event_id: int, user_id: int
+    session: AsyncSession,
+    *,
+    event_id: int,
+    user_id: int,
+    days: Sequence[date] | None = None,
 ) -> list[int]:
-    rows = await session.execute(
+    statement = (
         select(EventDay.id, AvailabilityDay.slot_mask)
         .outerjoin(
             AvailabilityDay,
@@ -216,6 +269,9 @@ async def get_user_availability_masks(
         .where(EventDay.event_id == event_id)
         .order_by(EventDay.day)
     )
+    if days is not None:
+        statement = statement.where(EventDay.day.in_(days))
+    rows = await session.execute(statement)
     return [int(mask or 0) for _, mask in rows]
 
 

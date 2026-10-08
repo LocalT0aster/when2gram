@@ -8,8 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
     ReplyKeyboardRemove,
 )
@@ -21,6 +19,7 @@ from when2gram.bot.keyboards.event_creation import (
     event_preview_keyboard,
     event_responses_keyboard,
     format_selected_days,
+    organizer_events_keyboard,
     response_target_keyboard,
     time_range_keyboard,
 )
@@ -28,8 +27,10 @@ from when2gram.bot.routers.inline import refresh_inline_invitations
 from when2gram.db.models import Event
 from when2gram.db.repositories import (
     create_event,
+    event_is_expired,
     get_event_availability_masks,
     get_event_by_token,
+    get_organized_events,
     get_preferred_time_range,
     get_slot_respondents,
     get_user_availability_masks,
@@ -101,6 +102,25 @@ async def begin_new_event(message: Message, state: FSMContext) -> None:
     await message.answer("What should this event be called?")
 
 
+@router.message(Command("events"))
+async def list_organized_events(
+    message: Message,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if message.chat.type != ChatType.PRIVATE or message.from_user is None:
+        await message.answer("Manage events in a private chat with me using /events.")
+        return
+    async with session_factory() as session:
+        events = await get_organized_events(session, message.from_user.id)
+    if not events:
+        await message.answer("You have no upcoming events. Use /new to create one.")
+        return
+    await message.answer(
+        "Your upcoming events:",
+        reply_markup=organizer_events_keyboard(events),
+    )
+
+
 @router.message(CommandStart(deep_link=True))
 async def join_event(
     message: Message,
@@ -112,7 +132,7 @@ async def join_event(
         return
     async with session_factory() as session, session.begin():
         event = await get_event_by_token(session, command.args)
-        if event is None:
+        if event is None or event_is_expired(event):
             await message.answer("That invitation is no longer available.")
             return
         await upsert_user(
@@ -393,9 +413,18 @@ async def _start_event_availability(
     selected_days = _read_selected_days(await state.get_data())
     if not selected_days:
         selected_days = [event_day.day for event_day in event.days]
+    selected_days = [day for day in selected_days if day >= date.today()]
+    if not selected_days:
+        await message.answer("That invitation is no longer available.")
+        return
     user_id = message.chat.id
     async with session_factory() as session:
-        masks = await get_user_availability_masks(session, event_id=event.id, user_id=user_id)
+        masks = await get_user_availability_masks(
+            session,
+            event_id=event.id,
+            user_id=user_id,
+            days=selected_days,
+        )
     await state.set_state(OrganizerAvailability.selecting)
     await state.set_data(
         {
@@ -592,6 +621,34 @@ async def _get_owned_event(
     return event
 
 
+@router.callback_query(F.data.startswith("events:manage:"))
+async def manage_organized_event(
+    callback: CallbackQuery,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    event = await _get_owned_event(callback, session_factory)
+    if event is None:
+        await callback.answer("Only the organizer can manage this event", show_alert=True)
+        return
+    if event_is_expired(event):
+        await callback.answer("That event is no longer available.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        _event_preview_text(
+            event.title,
+            [event_day.day for event_day in event.days],
+            event.response_target,
+            event.start_minute // 60,
+            event.end_minute // 60,
+        ),
+        reply_markup=event_preview_keyboard(event.token),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("event:availability:"))
 async def edit_owner_availability(
     callback: CallbackQuery,
@@ -632,7 +689,7 @@ async def view_event_responses(
     token = callback.data.rsplit(":", maxsplit=1)[1]
     async with session_factory() as session:
         event = await get_event_by_token(session, token)
-        if event is None:
+        if event is None or event_is_expired(event):
             await callback.answer("That invitation is no longer available.", show_alert=True)
             return
         respondent_count, masks_by_day = await get_event_availability_masks(session, event.id)
@@ -676,6 +733,7 @@ async def _show_event_responses(message: Message, state: FSMContext) -> None:
     end_minute = data.get("availability_end_minute")
     respondent_count = data.get("respondent_count")
     page_start = data.get("time_page_start")
+    selected_slot = data.get("selected_slot")
     if (
         len(days) != len(masks_by_day)
         or not isinstance(start_minute, int)
@@ -684,10 +742,20 @@ async def _show_event_responses(message: Message, state: FSMContext) -> None:
         or not isinstance(page_start, int)
     ):
         raise RuntimeError("event response view expired")
+    details = ""
+    if isinstance(selected_slot, int):
+        available = data.get("selected_available", [])
+        unavailable = data.get("selected_unavailable", [])
+        if isinstance(available, list) and isinstance(unavailable, list):
+            details = (
+                f"\n\n{slot_label(selected_slot, start_minute=start_minute)}\n"
+                f"Available: {', '.join(available) or 'Nobody'}\n"
+                f"Not available: {', '.join(unavailable) or 'Nobody'}"
+            )
     await message.edit_text(
         f"{GRID_WIDTH_DELIMITER}\n"
         f"Availability responses: {respondent_count}\n\n"
-        f"{format_selected_days([days[index]])} ({index + 1}/{len(days)})",
+        f"{format_selected_days([days[index]])} ({index + 1}/{len(days)}){details}",
         reply_markup=availability_keyboard(
             aggregate_counts(masks_by_day[index]),
             respondent_count=respondent_count,
@@ -700,6 +768,7 @@ async def _show_event_responses(message: Message, state: FSMContext) -> None:
             page_start=page_start,
             read_only=True,
             slots_are_clickable=True,
+            range_start=selected_slot if isinstance(selected_slot, int) else None,
             back_callback="responses:back",
         ),
     )
@@ -737,6 +806,15 @@ async def show_slot_respondents(
     ):
         await callback.answer("Response view expired", show_alert=True)
         return
+    if data.get("selected_slot") == slot:
+        await state.update_data(
+            selected_slot=None,
+            selected_available=[],
+            selected_unavailable=[],
+        )
+        await _show_event_responses(callback.message, state)
+        await callback.answer()
+        return
     async with session_factory() as session:
         respondents = await get_slot_respondents(
             session,
@@ -754,26 +832,11 @@ async def show_slot_respondents(
         for username, first_name, marked in respondents
         if not marked
     ]
-    await callback.message.edit_text(
-        f"{GRID_WIDTH_DELIMITER}\n"
-        f"{format_selected_days([days[index]])} at "
-        f"{slot_label(slot, start_minute=start_minute)}\n\n"
-        f"Available:\n{chr(10).join(available) or 'Nobody'}\n\n"
-        f"Not available:\n{chr(10).join(unavailable) or 'Nobody'}",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Back", callback_data="responses:slot-back")]
-            ]
-        ),
+    await state.update_data(
+        selected_slot=slot,
+        selected_available=available,
+        selected_unavailable=unavailable,
     )
-    await callback.answer()
-
-
-@router.callback_query(EventResponses.viewing, F.data == "responses:slot-back")
-async def return_to_response_grid(callback: CallbackQuery, state: FSMContext) -> None:
-    if callback.message is None:
-        await callback.answer()
-        return
     await _show_event_responses(callback.message, state)
     await callback.answer()
 
@@ -790,7 +853,12 @@ async def change_response_day(callback: CallbackQuery, state: FSMContext) -> Non
     days = _read_selected_days(data)
     index = _day_index(data, days)
     direction = -1 if callback.data.endswith("previous") else 1
-    await state.update_data(day_index=max(0, min(index + direction, len(days) - 1)))
+    await state.update_data(
+        day_index=max(0, min(index + direction, len(days) - 1)),
+        selected_slot=None,
+        selected_available=[],
+        selected_unavailable=[],
+    )
     await _show_event_responses(callback.message, state)
     await callback.answer()
 
@@ -817,7 +885,10 @@ async def change_response_time_page(callback: CallbackQuery, state: FSMContext) 
     slot_count = (end_minute - start_minute) // SLOT_MINUTES
     next_page_start = page_start - 60 if callback.data.endswith("earlier") else page_start + 60
     await state.update_data(
-        time_page_start=max(0, min(next_page_start, ((slot_count - 1) // 60) * 60))
+        time_page_start=max(0, min(next_page_start, ((slot_count - 1) // 60) * 60)),
+        selected_slot=None,
+        selected_available=[],
+        selected_unavailable=[],
     )
     await _show_event_responses(callback.message, state)
     await callback.answer()
@@ -993,14 +1064,29 @@ async def submit_organizer_availability(
     if not isinstance(event_id, int) or len(days) != len(masks):
         await callback.answer("Availability expired. Use /new to start again.", show_alert=True)
         return
-
-    async with session_factory() as session, session.begin():
-        result = await save_submitted_availability(
-            session,
-            event_id=event_id,
-            user_id=callback.from_user.id,
-            masks=masks,
+    today = date.today()
+    future_pairs = [(day, mask) for day, mask in zip(days, masks, strict=True) if day >= today]
+    if not future_pairs:
+        await callback.answer(
+            "Those days have passed. Reopen the invitation to reply.",
+            show_alert=True,
         )
+        return
+    days = [day for day, _ in future_pairs]
+    masks = [mask for _, mask in future_pairs]
+
+    try:
+        async with session_factory() as session, session.begin():
+            result = await save_submitted_availability(
+                session,
+                event_id=event_id,
+                user_id=callback.from_user.id,
+                masks=masks,
+                days=days,
+            )
+    except ValueError:
+        await callback.answer("That event is no longer available.", show_alert=True)
+        return
     await refresh_inline_invitations(bot, session_factory, event_id)
     title = str(data["title"])
     token = str(data["event_token"])

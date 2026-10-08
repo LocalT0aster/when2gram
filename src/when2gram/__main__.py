@@ -4,10 +4,26 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from when2gram.bot.routers import event_creation_router, inline_router, start_router
 from when2gram.config import get_settings
-from when2gram.db import claim_due_target_notifications, create_engine, create_session_factory
+from when2gram.db import (
+    claim_due_target_notifications,
+    create_engine,
+    create_session_factory,
+    delete_expired_events,
+)
+
+
+async def _delete_expired_events_periodically(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    while True:
+        async with session_factory() as session, session.begin():
+            await delete_expired_events(session)
+        await asyncio.sleep(60)
 
 
 async def main() -> None:
@@ -24,15 +40,24 @@ async def main() -> None:
     session_factory = create_session_factory(engine)
 
     bot = Bot(token=settings.bot_token)
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Show help"),
+            BotCommand(command="new", description="Create an event"),
+            BotCommand(command="events", description="Manage your events"),
+        ]
+    )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["session_factory"] = session_factory
     dispatcher.include_router(event_creation_router)
     dispatcher.include_router(inline_router)
     dispatcher.include_router(start_router)
 
+    cleanup_task: asyncio.Task[None] | None = None
     try:
         async with session_factory() as session, session.begin():
             overdue_notifications = await claim_due_target_notifications(session)
+            await delete_expired_events(session)
         for notification in overdue_notifications:
             try:
                 await bot.send_message(
@@ -41,8 +66,12 @@ async def main() -> None:
                 )
             except TelegramAPIError:
                 logging.exception("Unable to send overdue response-target notification")
+        cleanup_task = asyncio.create_task(_delete_expired_events_periodically(session_factory))
         await dispatcher.start_polling(bot)
     finally:
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
         await engine.dispose()
         await bot.session.close()
 

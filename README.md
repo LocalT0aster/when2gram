@@ -15,7 +15,7 @@ The project is intentionally Telegram-first: organizers create an event in the b
 - `uv` for dependency management
 - single-container `compose.yml` deployment
 
-The current implementation includes the domain model, SQLite schema/migration, an event-relative availability representation of up to 96 quarter-hour slots per day, a `/grid` command for validating the dense Telegram keyboard UX, and a private-chat `/new` wizard for creating events. Organizers choose an hourly event window, record their own availability before sharing, can edit it later from the preview, and can view aggregate participant responses.
+The current implementation includes the domain model, SQLite schema/migrations, an event-relative availability representation of up to 96 quarter-hour slots per day, and a private-chat `/new` wizard for creating events. Organizers choose an hourly event window, record their own availability before sharing, can edit it later from the preview, and can view aggregate participant responses in a tap-to-inspect grid. `/events` lists an organizer's upcoming events for quick access to management controls, expired events are deleted automatically, and availability for passed days cannot be submitted.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ uv run alembic upgrade head
 uv run python -m when2gram
 ```
 
-Try `/grid` in the bot's private chat to exercise the timetable prototype, or `/new` to create an event. The event wizard supports multi-date selection, an hourly event window from 00:00–24:00, and an optional organizer notification threshold. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` and enable `/setinlinefeedback` so sent invitations can refresh their reply count.
+Use `/new` to create an event, or `/events` to manage events you organized. The event wizard supports multi-date selection, an hourly event window from 00:00–24:00, and an optional organizer notification threshold. The share button opens inline mode with an invitation result; enable inline mode first in BotFather with `/setinline` and enable `/setinlinefeedback` so sent invitations can refresh their reply count.
 
 Run checks:
 

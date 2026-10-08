@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,11 +21,15 @@ from when2gram.bot.routers.event_creation import (
     _response_target_from_text,
     _toggle_cross_day_range,
     begin_new_event,
+    list_organized_events,
+    manage_organized_event,
 )
 from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_invitations
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
 from when2gram.db.repositories import (
     create_event,
+    delete_expired_events,
+    get_organized_events,
     get_slot_respondents,
     save_submitted_availability,
     upsert_user,
@@ -367,6 +371,55 @@ async def test_submission_notifies_once_after_the_response_target(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_expired_events_are_hidden_and_deleted(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    expired_day = date(2026, 10, 8)
+    future_day = date(2026, 10, 10)
+
+    async with session_factory() as session, session.begin():
+        expired_event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Expired",
+            days=[expired_day],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+        future_event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Future",
+            days=[future_day],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+        expired_event_id = expired_event.id
+
+    now = datetime(2026, 10, 9, 12)
+    async with session_factory() as session:
+        events = await get_organized_events(session, 42, now=now)
+    assert [event.id for event in events] == [future_event.id]
+
+    async with session_factory() as session, session.begin():
+        deleted_count = await delete_expired_events(session, now=now)
+    async with session_factory() as session:
+        assert await session.get(Event, expired_event_id) is None
+        assert await session.get(Event, future_event.id) is not None
+    assert deleted_count == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_event_rejects_missing_days(tmp_path) -> None:
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
     session_factory = create_session_factory(engine)
@@ -384,5 +437,138 @@ async def test_create_event_rejects_missing_days(tmp_path) -> None:
                 end_minute=24 * 60,
                 response_target=None,
             )
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_submission_rejects_passed_days(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+
+    async with session_factory() as session, session.begin():
+        event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Planning",
+            days=[date.today() + timedelta(days=3)],
+            start_minute=9 * 60,
+            end_minute=24 * 60,
+            response_target=None,
+        )
+
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="passed days"):
+            await save_submitted_availability(
+                session,
+                event_id=event.id,
+                user_id=42,
+                masks=[0],
+                days=[date(2020, 1, 1)],
+            )
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_events_command_lists_only_organizers_upcoming_events(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    future_day = date.today() + timedelta(days=2)
+
+    async with session_factory() as session, session.begin():
+        own_event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="My talk",
+            days=[future_day],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+        await create_event(
+            session,
+            organizer_id=7,
+            organizer_username="other",
+            organizer_first_name="Bob",
+            title="Not mine",
+            days=[future_day],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+
+    message = MagicMock()
+    message.chat.type = "private"
+    message.from_user = MagicMock()
+    message.from_user.id = 42
+    message.answer = AsyncMock()
+
+    await list_organized_events(message, session_factory)
+
+    markup = message.answer.await_args.kwargs["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert [button.callback_data for button in buttons] == [
+        f"events:manage:{own_event.token}"
+    ]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manage_event_requires_organizer_ownership(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+
+    async with session_factory() as session, session.begin():
+        event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="My talk",
+            days=[date.today() + timedelta(days=2)],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+
+    stranger_callback = MagicMock()
+    stranger_callback.data = f"events:manage:{event.token}"
+    stranger_callback.from_user = MagicMock()
+    stranger_callback.from_user.id = 7
+    stranger_callback.message = MagicMock()
+    stranger_callback.message.edit_text = AsyncMock()
+    stranger_callback.answer = AsyncMock()
+
+    await manage_organized_event(stranger_callback, session_factory)
+    stranger_callback.answer.assert_awaited_once_with(
+        "Only the organizer can manage this event", show_alert=True
+    )
+    stranger_callback.message.edit_text.assert_not_awaited()
+
+    owner_callback = MagicMock()
+    owner_callback.data = f"events:manage:{event.token}"
+    owner_callback.from_user = MagicMock()
+    owner_callback.from_user.id = 42
+    owner_callback.message = MagicMock()
+    owner_callback.message.edit_text = AsyncMock()
+    owner_callback.answer = AsyncMock()
+
+    await manage_organized_event(owner_callback, session_factory)
+    owner_callback.message.edit_text.assert_awaited_once()
+    assert "My talk" in owner_callback.message.edit_text.await_args.args[0]
+    markup = owner_callback.message.edit_text.await_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].switch_inline_query == f"event:{event.token}"
 
     await engine.dispose()

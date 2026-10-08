@@ -1,6 +1,7 @@
 import calendar
 from collections.abc import Collection, Sequence
 from datetime import date
+from typing import Protocol
 
 from aiogram.types import (
     InlineKeyboardButton,
@@ -8,6 +9,16 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
+
+
+class _EventDayInfo(Protocol):
+    day: date
+
+
+class _EventInfo(Protocol):
+    title: str
+    token: str
+    days: Sequence[_EventDayInfo]
 
 
 def date_picker_keyboard(
@@ -137,6 +148,20 @@ def event_responses_keyboard(token: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def organizer_events_keyboard(events: Sequence[_EventInfo]) -> InlineKeyboardMarkup:
+    rows = []
+    for event in events:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{event.title} ({event.days[-1].day:%d %b})",
+                    callback_data=f"events:manage:{event.token}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def format_selected_days(days: Sequence[date]) -> str:
