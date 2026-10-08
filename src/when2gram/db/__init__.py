@@ -1,5 +1,6 @@
 from .models import AvailabilityDay, Base, Event, EventDay, InlineInvite, Response, User
 from .repositories import (
+    claim_due_target_notifications,
     create_event,
     get_event_availability_masks,
     get_event_by_id,
@@ -23,6 +24,7 @@ __all__ = [
     "User",
     "create_engine",
     "create_event",
+    "claim_due_target_notifications",
     "create_session_factory",
     "get_event_availability_masks",
     "get_event_by_id",

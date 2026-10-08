@@ -2,11 +2,12 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from when2gram.bot.routers import event_creation_router, inline_router, start_router
 from when2gram.config import get_settings
-from when2gram.db import create_engine, create_session_factory
+from when2gram.db import claim_due_target_notifications, create_engine, create_session_factory
 
 
 async def main() -> None:
@@ -30,6 +31,16 @@ async def main() -> None:
     dispatcher.include_router(start_router)
 
     try:
+        async with session_factory() as session, session.begin():
+            overdue_notifications = await claim_due_target_notifications(session)
+        for notification in overdue_notifications:
+            try:
+                await bot.send_message(
+                    notification.organizer_id,
+                    f"{notification.event_title} reached {notification.response_count} replies.",
+                )
+            except TelegramAPIError:
+                logging.exception("Unable to send overdue response-target notification")
         await dispatcher.start_polling(bot)
     finally:
         await engine.dispose()

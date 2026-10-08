@@ -16,6 +16,13 @@ class SubmissionResult:
     target_reached: bool
 
 
+@dataclass(frozen=True)
+class TargetNotification:
+    organizer_id: int
+    event_title: str
+    response_count: int
+
+
 async def create_event(
     session: AsyncSession,
     *,
@@ -228,6 +235,35 @@ async def get_inline_invite_message_ids(session: AsyncSession, event_id: int) ->
             select(InlineInvite.inline_message_id).where(InlineInvite.event_id == event_id)
         )
     )
+
+
+async def claim_due_target_notifications(session: AsyncSession) -> list[TargetNotification]:
+    events = list(
+        await session.scalars(
+            select(Event).where(
+                Event.response_target.is_not(None), Event.target_notified_at.is_(None)
+            )
+        )
+    )
+    notifications = []
+    for event in events:
+        response_count = await submitted_response_count(session, event.id)
+        if response_count < event.response_target:
+            continue
+        result = await session.execute(
+            update(Event)
+            .where(Event.id == event.id, Event.target_notified_at.is_(None))
+            .values(target_notified_at=utc_now())
+        )
+        if result.rowcount == 1:
+            notifications.append(
+                TargetNotification(
+                    organizer_id=event.organizer_id,
+                    event_title=event.title,
+                    response_count=response_count,
+                )
+            )
+    return notifications
 
 
 async def submitted_response_count(session: AsyncSession, event_id: int) -> int:
