@@ -13,10 +13,12 @@ from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
     event_preview_keyboard,
     format_selected_days,
+    response_target_keyboard,
     time_range_keyboard,
 )
 from when2gram.bot.routers.event_creation import (
     NewEvent,
+    _response_target_from_text,
     _toggle_cross_day_range,
     begin_new_event,
 )
@@ -202,6 +204,15 @@ def test_time_range_keyboard_supports_midnight_as_an_end_hour() -> None:
 
     assert markup.inline_keyboard[-2][0].callback_data == "new:time:24"
     assert markup.inline_keyboard[-1][1].callback_data == "new:time:done"
+
+
+def test_response_target_reply_keyboard_accepts_common_and_custom_values() -> None:
+    keyboard = response_target_keyboard()
+
+    assert keyboard.keyboard[-1][0].text == "Don't notify"
+    assert _response_target_from_text("3 replies") == 3
+    assert _response_target_from_text("12") == 12
+    assert _response_target_from_text("Don't notify") is None
 
 
 @pytest.mark.asyncio

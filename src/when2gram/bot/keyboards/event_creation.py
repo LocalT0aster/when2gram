@@ -2,7 +2,12 @@ import calendar
 from collections.abc import Collection, Sequence
 from datetime import date
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 
 def date_picker_keyboard(
@@ -56,20 +61,19 @@ def date_picker_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def response_target_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def response_target_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
             [
-                InlineKeyboardButton(text="1 reply", callback_data="new:target:1"),
-                InlineKeyboardButton(text="3 replies", callback_data="new:target:3"),
-                InlineKeyboardButton(text="5 replies", callback_data="new:target:5"),
+                KeyboardButton(text="1 reply"),
+                KeyboardButton(text="3 replies"),
+                KeyboardButton(text="5 replies"),
             ],
-            [
-                InlineKeyboardButton(text="10 replies", callback_data="new:target:10"),
-                InlineKeyboardButton(text="Custom", callback_data="new:target:custom"),
-            ],
-            [InlineKeyboardButton(text="No notification", callback_data="new:target:none")],
-        ]
+            [KeyboardButton(text="10 replies")],
+            [KeyboardButton(text="Don't notify")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 

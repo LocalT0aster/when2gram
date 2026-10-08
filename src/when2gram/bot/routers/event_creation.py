@@ -6,7 +6,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from when2gram.bot.keyboards.availability import availability_keyboard
@@ -45,7 +45,6 @@ class NewEvent(StatesGroup):
     dates = State()
     time_range = State()
     target = State()
-    custom_target = State()
 
 
 class OrganizerAvailability(StatesGroup):
@@ -291,62 +290,44 @@ async def select_time_range_hour(callback: CallbackQuery, state: FSMContext) -> 
 async def finish_time_range(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewEvent.target)
     if callback.message is not None:
-        await callback.message.edit_text(
-            "Notify you after how many submitted replies?",
+        await callback.message.edit_text("Event hours selected.")
+        await callback.message.answer(
+            "Notify you after how many submitted replies?\n\n"
+            "Choose an option or send any whole number.",
             reply_markup=response_target_keyboard(),
         )
     await callback.answer()
 
 
-@router.callback_query(NewEvent.target, F.data == "new:target:custom")
-async def request_custom_target(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(NewEvent.custom_target)
-    if callback.message is not None:
-        await callback.message.edit_text(
-            "Send the number of submitted replies that should notify you."
-        )
-    await callback.answer()
+def _response_target_from_text(text: str) -> int | None:
+    if text == "Don't notify":
+        return None
+    if text.endswith(" reply") or text.endswith(" replies"):
+        text = text.split(maxsplit=1)[0]
+    return int(text)
 
 
-@router.callback_query(NewEvent.target, F.data.startswith("new:target:"))
-async def select_response_target(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    if callback.data is None:
-        await callback.answer()
-        return
-
-    value = callback.data.rsplit(":", maxsplit=1)[1]
-    try:
-        target = None if value == "none" else int(value)
-    except ValueError:
-        await callback.answer("Invalid notification target", show_alert=True)
-        return
-    if target is not None and target < 1:
-        await callback.answer("Invalid notification target", show_alert=True)
-        return
-    await _create_and_preview(callback, state, session_factory, target)
-
-
-@router.message(NewEvent.custom_target)
-async def receive_custom_target(
+@router.message(NewEvent.target)
+async def receive_response_target(
     message: Message,
     state: FSMContext,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     try:
-        target = int((message.text or "").strip())
+        target = _response_target_from_text((message.text or "").strip())
     except ValueError:
-        await message.answer("Send a whole number, such as 12.")
+        await message.answer("Choose an option or send a whole number, such as 12.")
         return
-    if target < 1:
+    if target is not None and target < 1:
         await message.answer("The notification target must be at least 1.")
         return
-
     event = await _persist_event(message, state, session_factory, target)
-    await message.answer(f"Notification target set to {target} replies.")
+    confirmation = (
+        "Notifications disabled."
+        if target is None
+        else f"Notification target set to {target} replies."
+    )
+    await message.answer(confirmation, reply_markup=ReplyKeyboardRemove())
     await _start_event_availability(
         message,
         state,
@@ -355,27 +336,6 @@ async def receive_custom_target(
         replace=False,
         is_organizer=True,
     )
-
-
-async def _create_and_preview(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_factory: async_sessionmaker[AsyncSession],
-    target: int | None,
-) -> None:
-    if callback.message is None:
-        await callback.answer()
-        return
-    event = await _persist_event(callback, state, session_factory, target)
-    await _start_event_availability(
-        callback.message,
-        state,
-        event,
-        session_factory,
-        replace=True,
-        is_organizer=True,
-    )
-    await callback.answer("Event created")
 
 
 async def _persist_event(
