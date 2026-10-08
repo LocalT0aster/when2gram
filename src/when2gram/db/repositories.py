@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from secrets import token_urlsafe
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -169,6 +169,24 @@ async def save_submitted_availability(
         )
         target_reached = result.rowcount == 1
     return SubmissionResult(response_count=response_count, target_reached=target_reached)
+
+
+async def withdraw_submitted_availability(
+    session: AsyncSession, *, event_id: int, user_id: int
+) -> int:
+    """Delete a submitted response and return the remaining response count."""
+    event_day_ids = select(EventDay.id).where(EventDay.event_id == event_id)
+    await session.execute(
+        delete(AvailabilityDay).where(
+            AvailabilityDay.user_id == user_id,
+            AvailabilityDay.event_day_id.in_(event_day_ids),
+        )
+    )
+    await session.execute(
+        delete(Response).where(Response.event_id == event_id, Response.user_id == user_id)
+    )
+    await session.flush()
+    return await submitted_response_count(session, event_id)
 
 
 async def get_event_by_token(session: AsyncSession, token: str) -> Event | None:

@@ -36,6 +36,7 @@ def availability_keyboard(
     page_start: int = 0,
     read_only: bool = False,
     back_callback: str | None = None,
+    withdraw_label: str | None = None,
 ) -> InlineKeyboardMarkup:
     if len(counts) != SLOTS_PER_DAY:
         raise ValueError(f"expected {SLOTS_PER_DAY} counts, got {len(counts)}")
@@ -109,13 +110,23 @@ def availability_keyboard(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Clear", callback_data=f"{callback_prefix}:clear", style="danger"
+                    text="Clear day", callback_data=f"{callback_prefix}:clear", style="danger"
                 ),
                 InlineKeyboardButton(
                     text="Done", callback_data=f"{callback_prefix}:done", style="success"
                 ),
             ]
         )
+        if withdraw_label is not None:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=withdraw_label,
+                        callback_data=f"{callback_prefix}:withdraw",
+                        style="danger",
+                    )
+                ]
+            )
     elif back_callback is not None:
         rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

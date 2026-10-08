@@ -27,6 +27,7 @@ from when2gram.db.repositories import (
     get_user_availability_masks,
     save_submitted_availability,
     upsert_user,
+    withdraw_submitted_availability,
 )
 from when2gram.domain.availability import (
     SLOT_MINUTES,
@@ -119,6 +120,7 @@ async def join_event(
         session_factory,
         replace=False,
         is_organizer=message.from_user.id == event.organizer_id,
+        is_creating=False,
     )
 
 
@@ -335,6 +337,7 @@ async def receive_response_target(
         session_factory,
         replace=False,
         is_organizer=True,
+        is_creating=True,
     )
 
 
@@ -377,6 +380,7 @@ async def _start_event_availability(
     *,
     replace: bool,
     is_organizer: bool,
+    is_creating: bool,
 ) -> None:
     selected_days = _read_selected_days(await state.get_data())
     if not selected_days:
@@ -401,6 +405,7 @@ async def _start_event_availability(
             "availability_end_minute": event.end_minute,
             "time_page_start": 0,
             "is_organizer": is_organizer,
+            "is_creating": is_creating,
         }
     )
     if replace:
@@ -482,6 +487,11 @@ def _organizer_availability_keyboard(data: dict[str, object]):
         start_minute=start_minute,
         end_minute=end_minute,
         page_start=page_start,
+        withdraw_label=(
+            "Skip"
+            if data.get("is_creating") is True and data.get("is_organizer") is True
+            else "Withdraw my response"
+        ),
     )
 
 
@@ -594,6 +604,7 @@ async def edit_owner_availability(
         session_factory,
         replace=True,
         is_organizer=True,
+        is_creating=False,
     )
     await callback.answer()
 
@@ -789,7 +800,68 @@ async def clear_organizer_availability(callback: CallbackQuery, state: FSMContex
     masks[_day_index(data, days)] = 0
     await state.update_data(masks=masks, range_start_day_index=None, range_start_slot=None)
     await _show_organizer_availability(callback.message, state)
-    await callback.answer("Cleared")
+    await callback.answer("Day cleared")
+
+
+@router.callback_query(OrganizerAvailability.selecting, F.data == "availability:withdraw")
+async def withdraw_availability_response(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    event_id = data.get("event_id")
+    if not isinstance(event_id, int):
+        await callback.answer("Availability expired. Open the invitation again.", show_alert=True)
+        return
+    is_organizer = data.get("is_organizer") is True
+    is_creating = data.get("is_creating") is True
+    title = str(data["title"])
+    token = str(data["event_token"])
+    days = _read_selected_days(data)
+    target = data.get("response_target")
+    start_minute = data.get("availability_start_minute")
+    end_minute = data.get("availability_end_minute")
+    await state.clear()
+    if is_creating and is_organizer:
+        await callback.message.edit_text(
+            _event_preview_text(
+                title,
+                days,
+                target if isinstance(target, int) else None,
+                start_minute // 60 if isinstance(start_minute, int) else 9,
+                end_minute // 60 if isinstance(end_minute, int) else 24,
+            ),
+            reply_markup=event_preview_keyboard(token),
+        )
+        await callback.answer("Availability skipped")
+        return
+
+    async with session_factory() as session, session.begin():
+        await withdraw_submitted_availability(
+            session,
+            event_id=event_id,
+            user_id=callback.from_user.id,
+        )
+    await refresh_inline_invitations(bot, session_factory, event_id)
+    if is_organizer:
+        await callback.message.edit_text(
+            _event_preview_text(
+                title,
+                days,
+                target if isinstance(target, int) else None,
+                start_minute // 60 if isinstance(start_minute, int) else 9,
+                end_minute // 60 if isinstance(end_minute, int) else 24,
+            ),
+            reply_markup=event_preview_keyboard(token),
+        )
+    else:
+        await callback.message.edit_text("Your response was withdrawn.")
+    await callback.answer("Response withdrawn")
 
 
 @router.callback_query(

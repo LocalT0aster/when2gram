@@ -24,7 +24,12 @@ from when2gram.bot.routers.event_creation import (
 )
 from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_invitations
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
-from when2gram.db.repositories import create_event, save_submitted_availability, upsert_user
+from when2gram.db.repositories import (
+    create_event,
+    save_submitted_availability,
+    upsert_user,
+    withdraw_submitted_availability,
+)
 from when2gram.db.session import create_engine, create_session_factory
 from when2gram.domain.availability import SLOTS_PER_DAY
 
@@ -286,6 +291,20 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
                 user_id=42,
                 masks=[1 << 60, 0],
             )
+
+    async with session_factory() as session, session.begin():
+        remaining_responses = await withdraw_submitted_availability(
+            session,
+            event_id=event_id,
+            user_id=42,
+        )
+
+    async with session_factory() as session:
+        assert await session.get(Response, (event_id, 42)) is None
+        assert list(
+            await session.scalars(select(AvailabilityDay).where(AvailabilityDay.user_id == 42))
+        ) == []
+    assert remaining_responses == 0
 
     await engine.dispose()
 

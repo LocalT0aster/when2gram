@@ -11,6 +11,7 @@ from .repositories import (
     save_submitted_availability,
     submitted_response_count,
     upsert_user,
+    withdraw_submitted_availability,
 )
 from .session import create_engine, create_session_factory
 
@@ -35,4 +36,5 @@ __all__ = [
     "save_submitted_availability",
     "submitted_response_count",
     "upsert_user",
+    "withdraw_submitted_availability",
 ]
