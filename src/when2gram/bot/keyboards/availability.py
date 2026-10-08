@@ -34,6 +34,8 @@ def availability_keyboard(
     start_minute: int = 9 * 60,
     end_minute: int = 24 * 60,
     page_start: int = 0,
+    read_only: bool = False,
+    back_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
     if len(counts) != SLOTS_PER_DAY:
         raise ValueError(f"expected {SLOTS_PER_DAY} counts, got {len(counts)}")
@@ -66,7 +68,7 @@ def availability_keyboard(
             row.append(
                 InlineKeyboardButton(
                     text=f"{marker}{count}",
-                    callback_data=f"{callback_prefix}:slot:{slot}",
+                    callback_data="noop" if read_only else f"{callback_prefix}:slot:{slot}",
                     style=_availability_style(count, respondent_count),
                 )
             )
@@ -103,14 +105,17 @@ def availability_keyboard(
             ]
         )
 
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="Clear", callback_data=f"{callback_prefix}:clear", style="danger"
-            ),
-            InlineKeyboardButton(
-                text="Done", callback_data=f"{callback_prefix}:done", style="success"
-            ),
-        ]
-    )
+    if not read_only:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Clear", callback_data=f"{callback_prefix}:clear", style="danger"
+                ),
+                InlineKeyboardButton(
+                    text="Done", callback_data=f"{callback_prefix}:done", style="success"
+                ),
+            ]
+        )
+    elif back_callback is not None:
+        rows.append([InlineKeyboardButton(text="Back", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -1,12 +1,19 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from secrets import token_urlsafe
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from .models import AvailabilityDay, Event, EventDay, Response, User, utc_now
+from .models import AvailabilityDay, Event, EventDay, InlineInvite, Response, User, utc_now
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    response_count: int
+    target_reached: bool
 
 
 async def create_event(
@@ -110,7 +117,7 @@ async def save_submitted_availability(
     event_id: int,
     user_id: int,
     masks: Sequence[int],
-) -> None:
+) -> SubmissionResult:
     """Save one participant's day masks and mark their response submitted."""
     event = await session.get(Event, event_id)
     if event is None:
@@ -145,11 +152,81 @@ async def save_submitted_availability(
             availability.slot_mask = mask
 
     await session.flush()
+    response_count = await submitted_response_count(session, event_id)
+    target_reached = False
+    if event.response_target is not None and response_count >= event.response_target:
+        result = await session.execute(
+            update(Event)
+            .where(Event.id == event_id, Event.target_notified_at.is_(None))
+            .values(target_notified_at=utc_now())
+        )
+        target_reached = result.rowcount == 1
+    return SubmissionResult(response_count=response_count, target_reached=target_reached)
 
 
 async def get_event_by_token(session: AsyncSession, token: str) -> Event | None:
     return await session.scalar(
         select(Event).options(selectinload(Event.days)).where(Event.token == token)
+    )
+
+
+async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
+    return await session.scalar(
+        select(Event).options(selectinload(Event.days)).where(Event.id == event_id)
+    )
+
+
+async def get_user_availability_masks(
+    session: AsyncSession, *, event_id: int, user_id: int
+) -> list[int]:
+    rows = await session.execute(
+        select(EventDay.id, AvailabilityDay.slot_mask)
+        .outerjoin(
+            AvailabilityDay,
+            and_(
+                AvailabilityDay.event_day_id == EventDay.id,
+                AvailabilityDay.user_id == user_id,
+            ),
+        )
+        .where(EventDay.event_id == event_id)
+        .order_by(EventDay.day)
+    )
+    return [int(mask or 0) for _, mask in rows]
+
+
+async def get_event_availability_masks(
+    session: AsyncSession, event_id: int
+) -> tuple[int, list[list[int]]]:
+    event_days = list(
+        await session.scalars(
+            select(EventDay).where(EventDay.event_id == event_id).order_by(EventDay.day)
+        )
+    )
+    masks_by_day = [[] for _ in event_days]
+    day_index = {event_day.id: index for index, event_day in enumerate(event_days)}
+    rows = await session.execute(
+        select(AvailabilityDay.event_day_id, AvailabilityDay.slot_mask)
+        .join(EventDay, AvailabilityDay.event_day_id == EventDay.id)
+        .join(
+            Response,
+            and_(
+                Response.event_id == EventDay.event_id,
+                Response.user_id == AvailabilityDay.user_id,
+                Response.submitted_at.is_not(None),
+            ),
+        )
+        .where(EventDay.event_id == event_id)
+    )
+    for event_day_id, mask in rows:
+        masks_by_day[day_index[event_day_id]].append(mask)
+    return await submitted_response_count(session, event_id), masks_by_day
+
+
+async def get_inline_invite_message_ids(session: AsyncSession, event_id: int) -> list[str]:
+    return list(
+        await session.scalars(
+            select(InlineInvite.inline_message_id).where(InlineInvite.event_id == event_id)
+        )
     )
 
 

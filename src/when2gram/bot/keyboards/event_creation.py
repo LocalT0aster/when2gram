@@ -110,7 +110,15 @@ def event_preview_keyboard(token: str) -> InlineKeyboardMarkup:
                     text="Share invitation",
                     switch_inline_query=f"event:{token}",
                 )
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="My availability", callback_data=f"event:availability:{token}"
+                ),
+                InlineKeyboardButton(
+                    text="View responses", callback_data=f"event:responses:{token}"
+                ),
+            ],
         ]
     )
 

@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    TypeDecorator,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -12,6 +21,19 @@ class Base(DeclarativeBase):
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class AvailabilityMask(TypeDecorator[int]):
+    """Store masks as text because SQLite integers stop at 64 bits."""
+
+    impl = String(32)
+    cache_ok = True
+
+    def process_bind_param(self, value: int | None, dialect: object) -> str | None:
+        return None if value is None else str(value)
+
+    def process_result_value(self, value: str | int | None, dialect: object) -> int | None:
+        return None if value is None else int(value)
 
 
 class User(Base):
@@ -87,7 +109,7 @@ class AvailabilityDay(Base):
         ForeignKey("users.telegram_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    slot_mask: Mapped[int] = mapped_column(BigInteger, default=0)
+    slot_mask: Mapped[int] = mapped_column(AvailabilityMask(), default=0)
 
 
 class InlineInvite(Base):

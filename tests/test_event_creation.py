@@ -15,10 +15,14 @@ from when2gram.bot.keyboards.event_creation import (
     format_selected_days,
     time_range_keyboard,
 )
-from when2gram.bot.routers.event_creation import NewEvent, begin_new_event
-from when2gram.bot.routers.inline import event_invitation_query
+from when2gram.bot.routers.event_creation import (
+    NewEvent,
+    _toggle_cross_day_range,
+    begin_new_event,
+)
+from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_invitations
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
-from when2gram.db.repositories import create_event, save_submitted_availability
+from when2gram.db.repositories import create_event, save_submitted_availability, upsert_user
 from when2gram.db.session import create_engine, create_session_factory
 from when2gram.domain.availability import SLOTS_PER_DAY
 
@@ -138,6 +142,63 @@ def test_availability_keyboard_pages_a_full_day_event() -> None:
     assert later_markup.inline_keyboard[1][1].callback_data == "grid:slot:60"
 
 
+def test_cross_day_range_fills_every_intermediate_event_day() -> None:
+    masks = [0, 0, 0]
+
+    _toggle_cross_day_range(
+        masks,
+        start_day_index=0,
+        start_slot=4,
+        end_day_index=2,
+        end_slot=19,
+        slot_count=60,
+    )
+
+    assert masks[0] == ((1 << 56) - 1) << 4
+    assert masks[1] == (1 << 60) - 1
+    assert masks[2] == (1 << 20) - 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_inline_invitations_uses_current_response_count(monkeypatch) -> None:
+    event = Event(
+        id=3,
+        token="opaque-token",
+        organizer_id=42,
+        title="Thesis meeting",
+        start_minute=9 * 60,
+        end_minute=24 * 60,
+        days=[EventDay(day=date(2026, 10, 8))],
+    )
+    session = MagicMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=None)
+    session_factory = MagicMock(return_value=session_context)
+    bot = MagicMock()
+    bot.get_me = AsyncMock(return_value=MagicMock(username="when2grambot"))
+    bot.edit_message_text = AsyncMock()
+
+    monkeypatch.setattr(
+        "when2gram.bot.routers.inline.get_event_by_id", AsyncMock(return_value=event)
+    )
+    monkeypatch.setattr(
+        "when2gram.bot.routers.inline.submitted_response_count", AsyncMock(return_value=4)
+    )
+    monkeypatch.setattr(
+        "when2gram.bot.routers.inline.get_inline_invite_message_ids",
+        AsyncMock(return_value=["one", "two"]),
+    )
+
+    await refresh_inline_invitations(bot, session_factory, event.id)
+
+    assert bot.edit_message_text.await_count == 2
+    assert {
+        call.kwargs["inline_message_id"] for call in bot.edit_message_text.await_args_list
+    } == {"one", "two"}
+    assert "4 replied" in bot.edit_message_text.await_args_list[0].kwargs["text"]
+
+
 def test_time_range_keyboard_supports_midnight_as_an_end_hour() -> None:
     markup = time_range_keyboard(9, 24)
 
@@ -216,6 +277,52 @@ async def test_create_event_persists_organizer_and_unique_ordered_days(tmp_path)
                 user_id=42,
                 masks=[1 << 60, 0],
             )
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_submission_notifies_once_after_the_response_target(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    event_day = date(2026, 10, 8)
+
+    async with session_factory() as session, session.begin():
+        event = await create_event(
+            session,
+            organizer_id=1,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Planning",
+            days=[event_day],
+            start_minute=0,
+            end_minute=24 * 60,
+            response_target=2,
+        )
+        event_id = event.id
+        await upsert_user(session, telegram_id=2, username="guest", first_name="Grace")
+
+    async with session_factory() as session, session.begin():
+        first = await save_submitted_availability(
+            session, event_id=event_id, user_id=1, masks=[1 << 95]
+        )
+    async with session_factory() as session, session.begin():
+        second = await save_submitted_availability(
+            session, event_id=event_id, user_id=2, masks=[1]
+        )
+    async with session_factory() as session, session.begin():
+        repeated = await save_submitted_availability(
+            session, event_id=event_id, user_id=2, masks=[1]
+        )
+
+    assert first.response_count == 1
+    assert not first.target_reached
+    assert second.response_count == 2
+    assert second.target_reached
+    assert repeated.response_count == 2
+    assert not repeated.target_reached
 
     await engine.dispose()
 
