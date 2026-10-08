@@ -269,7 +269,8 @@ def test_response_target_reply_keyboard_accepts_common_and_custom_values() -> No
     keyboard = response_target_keyboard()
 
     assert keyboard.keyboard[-1][0].text == "Don't notify"
-    assert _response_target_from_text("3 replies") == 3
+    assert [button.text for button in keyboard.keyboard[0]] == ["1", "2", "3", "4", "5"]
+    assert _response_target_from_text("3") == 3
     assert _response_target_from_text("12") == 12
     assert _response_target_from_text("Don't notify") is None
 
@@ -295,13 +296,17 @@ def test_creation_keyboards_expose_back_and_cancel_actions() -> None:
         ).inline_keyboard
         for button in row
     ]
-    target_keyboard = response_target_keyboard(include_navigation=True)
+    target_keyboard = response_target_keyboard()
 
     assert "new:back:title" not in [button.callback_data for button in date_buttons]
     assert "new:cancel" in [button.callback_data for button in date_buttons]
     assert "new:back:dates" in [button.callback_data for button in time_buttons]
     assert "new:cancel" in [button.callback_data for button in time_buttons]
-    assert [button.text for button in target_keyboard.keyboard[-1]] == ["Back", "Cancel"]
+    assert all(
+        button.text not in {"Back", "Cancel"}
+        for row in target_keyboard.keyboard
+        for button in row
+    )
     assert [button.text for button in date_buttons[-2:]] == ["Cancel", "Continue"]
     assert [button.text for button in time_buttons[-4:]] == ["Back", "Cancel", "Reset", "Continue"]
 

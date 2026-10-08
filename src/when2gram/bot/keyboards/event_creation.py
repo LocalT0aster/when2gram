@@ -103,18 +103,18 @@ def date_picker_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def response_target_keyboard(*, include_navigation: bool = False) -> ReplyKeyboardMarkup:
+def response_target_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [
-            KeyboardButton(text="1 reply"),
-            KeyboardButton(text="3 replies"),
-            KeyboardButton(text="5 replies"),
+            KeyboardButton(text="1"),
+            KeyboardButton(text="2"),
+            KeyboardButton(text="3"),
+            KeyboardButton(text="4"),
+            KeyboardButton(text="5"),
         ],
-        [KeyboardButton(text="10 replies")],
+        [KeyboardButton(text="10")],
         [KeyboardButton(text="Don't notify")],
     ]
-    if include_navigation:
-        keyboard.append([KeyboardButton(text="Back"), KeyboardButton(text="Cancel")])
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
         resize_keyboard=True,
