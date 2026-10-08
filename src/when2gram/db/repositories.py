@@ -83,6 +83,91 @@ async def create_event(
     return event
 
 
+async def update_event(
+    session: AsyncSession,
+    *,
+    event_id: int,
+    title: str | None = None,
+    days: Sequence[date] | None = None,
+    start_minute: int | None = None,
+    end_minute: int | None = None,
+    response_target: int | None = None,
+    update_response_target: bool = False,
+) -> Event:
+    """Update an event, clearing replies when its schedule changes."""
+    event = await session.scalar(
+        select(Event).options(selectinload(Event.days)).where(Event.id == event_id)
+    )
+    if event is None:
+        raise ValueError("event does not exist")
+
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise ValueError("event title cannot be empty")
+        event.title = title
+
+    if days is not None:
+        unique_days = sorted(set(days))
+        if not unique_days:
+            raise ValueError("an event needs at least one day")
+        if any(day < date.today() for day in unique_days):
+            raise ValueError("event days cannot be in the past")
+    else:
+        unique_days = None
+    days_changed = unique_days is not None and (
+        [event_day.day for event_day in event.days] != unique_days
+    )
+
+    time_changed = False
+    if start_minute is not None or end_minute is not None:
+        next_start_minute = event.start_minute if start_minute is None else start_minute
+        next_end_minute = event.end_minute if end_minute is None else end_minute
+        if not 0 <= next_start_minute < next_end_minute <= 24 * 60:
+            raise ValueError("event time range must be between 00:00 and 24:00")
+        if next_start_minute % 60 or next_end_minute % 60:
+            raise ValueError("event time range must use whole hours")
+        time_changed = (event.start_minute, event.end_minute) != (
+            next_start_minute,
+            next_end_minute,
+        )
+        if time_changed:
+            event.start_minute = next_start_minute
+            event.end_minute = next_end_minute
+
+    schedule_changed = days_changed or time_changed
+    if schedule_changed:
+        event_day_ids = select(EventDay.id).where(EventDay.event_id == event.id)
+        await session.execute(
+            delete(AvailabilityDay).where(AvailabilityDay.event_day_id.in_(event_day_ids))
+        )
+        await session.execute(delete(Response).where(Response.event_id == event.id))
+        if days_changed:
+            event.days.clear()
+            await session.flush()
+            event.days.extend(EventDay(day=day) for day in unique_days or [])
+        event.target_notified_at = None
+
+    if update_response_target:
+        if response_target is not None and response_target < 1:
+            raise ValueError("response target must be positive")
+        if event.response_target != response_target:
+            event.response_target = response_target
+            event.target_notified_at = None
+
+    await session.flush()
+    return event
+
+
+async def delete_event(session: AsyncSession, event_id: int) -> bool:
+    event = await session.get(Event, event_id)
+    if event is None:
+        return False
+    await session.delete(event)
+    await session.flush()
+    return True
+
+
 async def upsert_user(
     session: AsyncSession,
     *,

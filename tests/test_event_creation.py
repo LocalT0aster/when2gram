@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from when2gram.bot.keyboards.availability import availability_keyboard
 from when2gram.bot.keyboards.event_creation import (
     date_picker_keyboard,
+    event_edit_keyboard,
     event_preview_keyboard,
     format_selected_days,
     response_target_keyboard,
@@ -21,6 +22,7 @@ from when2gram.bot.routers.event_creation import (
     _response_target_from_text,
     _toggle_cross_day_range,
     begin_new_event,
+    delete_owned_event,
     list_organized_events,
     manage_organized_event,
 )
@@ -28,10 +30,12 @@ from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
 from when2gram.db.repositories import (
     create_event,
+    delete_event,
     delete_expired_events,
     get_organized_events,
     get_slot_respondents,
     save_submitted_availability,
+    update_event,
     upsert_user,
     withdraw_submitted_availability,
 )
@@ -109,6 +113,21 @@ def test_preview_shares_the_event_token() -> None:
     markup = event_preview_keyboard("opaque-token")
 
     assert markup.inline_keyboard[0][0].switch_inline_query == "event:opaque-token"
+    assert markup.inline_keyboard[2][0].callback_data == "event:edit:opaque-token"
+    assert markup.inline_keyboard[2][1].callback_data == "event:delete:opaque-token"
+
+
+def test_event_edit_keyboard_scopes_all_actions_to_the_event() -> None:
+    markup = event_edit_keyboard("opaque-token")
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert [button.callback_data for button in buttons] == [
+        "event:edit:title:opaque-token",
+        "event:edit:dates:opaque-token",
+        "event:edit:time:opaque-token",
+        "event:edit:target:opaque-token",
+        "event:manage:opaque-token",
+    ]
 
 
 def test_format_selected_days() -> None:
@@ -420,6 +439,63 @@ async def test_expired_events_are_hidden_and_deleted(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_schedule_edits_clear_responses_and_event_deletion_cascades(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    first_day = date.today() + timedelta(days=2)
+    second_day = first_day + timedelta(days=1)
+
+    async with session_factory() as session, session.begin():
+        event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="Planning",
+            days=[first_day],
+            start_minute=9 * 60,
+            end_minute=12 * 60,
+            response_target=3,
+        )
+        await save_submitted_availability(
+            session,
+            event_id=event.id,
+            user_id=42,
+            masks=[1],
+        )
+
+    async with session_factory() as session, session.begin():
+        renamed = await update_event(session, event_id=event.id, title="Renamed")
+    assert renamed.title == "Renamed"
+
+    async with session_factory() as session:
+        assert await session.get(Response, (event.id, 42)) is not None
+
+    async with session_factory() as session, session.begin():
+        rescheduled = await update_event(
+            session,
+            event_id=event.id,
+            days=[first_day, second_day],
+            start_minute=10 * 60,
+            end_minute=13 * 60,
+        )
+    assert [event_day.day for event_day in rescheduled.days] == [first_day, second_day]
+    assert rescheduled.target_notified_at is None
+
+    async with session_factory() as session:
+        assert await session.get(Response, (event.id, 42)) is None
+        assert list(await session.scalars(select(AvailabilityDay))) == []
+
+    async with session_factory() as session, session.begin():
+        assert await delete_event(session, event.id)
+    async with session_factory() as session:
+        assert await session.get(Event, event.id) is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_event_rejects_missing_days(tmp_path) -> None:
     engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
     session_factory = create_session_factory(engine)
@@ -529,6 +605,8 @@ async def test_manage_event_requires_organizer_ownership(tmp_path) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     session_factory = create_session_factory(engine)
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
 
     async with session_factory() as session, session.begin():
         event = await create_event(
@@ -551,7 +629,7 @@ async def test_manage_event_requires_organizer_ownership(tmp_path) -> None:
     stranger_callback.message.edit_text = AsyncMock()
     stranger_callback.answer = AsyncMock()
 
-    await manage_organized_event(stranger_callback, session_factory)
+    await manage_organized_event(stranger_callback, state, session_factory)
     stranger_callback.answer.assert_awaited_once_with(
         "Only the organizer can manage this event", show_alert=True
     )
@@ -565,10 +643,65 @@ async def test_manage_event_requires_organizer_ownership(tmp_path) -> None:
     owner_callback.message.edit_text = AsyncMock()
     owner_callback.answer = AsyncMock()
 
-    await manage_organized_event(owner_callback, session_factory)
+    await manage_organized_event(owner_callback, state, session_factory)
     owner_callback.message.edit_text.assert_awaited_once()
     assert "My talk" in owner_callback.message.edit_text.await_args.args[0]
     markup = owner_callback.message.edit_text.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].switch_inline_query == f"event:{event.token}"
 
+    await storage.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_only_the_organizer_can_confirm_event_deletion(tmp_path) -> None:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'when2gram.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+
+    async with session_factory() as session, session.begin():
+        event = await create_event(
+            session,
+            organizer_id=42,
+            organizer_username="organizer",
+            organizer_first_name="Ada",
+            title="My talk",
+            days=[date.today() + timedelta(days=2)],
+            start_minute=9 * 60,
+            end_minute=10 * 60,
+            response_target=None,
+        )
+
+    stranger_callback = MagicMock()
+    stranger_callback.data = f"event:delete:confirm:{event.token}"
+    stranger_callback.from_user = MagicMock()
+    stranger_callback.from_user.id = 7
+    stranger_callback.message = MagicMock()
+    stranger_callback.message.edit_text = AsyncMock()
+    stranger_callback.answer = AsyncMock()
+
+    await delete_owned_event(stranger_callback, state, session_factory)
+    stranger_callback.answer.assert_awaited_once_with(
+        "Only the organizer can delete this event", show_alert=True
+    )
+    async with session_factory() as session:
+        assert await session.get(Event, event.id) is not None
+
+    owner_callback = MagicMock()
+    owner_callback.data = f"event:delete:confirm:{event.token}"
+    owner_callback.from_user = MagicMock()
+    owner_callback.from_user.id = 42
+    owner_callback.message = MagicMock()
+    owner_callback.message.edit_text = AsyncMock()
+    owner_callback.answer = AsyncMock()
+
+    await delete_owned_event(owner_callback, state, session_factory)
+    owner_callback.message.edit_text.assert_awaited_once_with("Event deleted.")
+    async with session_factory() as session:
+        assert await session.get(Event, event.id) is None
+
+    await storage.close()
     await engine.dispose()

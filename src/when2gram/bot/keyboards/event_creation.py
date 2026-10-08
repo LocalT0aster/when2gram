@@ -26,6 +26,8 @@ def date_picker_keyboard(
     selected_days: Collection[date],
     *,
     today: date | None = None,
+    callback_prefix: str = "new",
+    cancel_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Build a month picker whose selected dates are shown in green."""
     if today is None:
@@ -33,11 +35,11 @@ def date_picker_keyboard(
 
     rows = [
         [
-            InlineKeyboardButton(text="‹", callback_data="new:month:-1"),
+            InlineKeyboardButton(text="‹", callback_data=f"{callback_prefix}:month:-1"),
             InlineKeyboardButton(
                 text=month.strftime("%B %Y"), callback_data="noop", style="primary"
             ),
-            InlineKeyboardButton(text="›", callback_data="new:month:1"),
+            InlineKeyboardButton(text="›", callback_data=f"{callback_prefix}:month:1"),
         ],
         [
             InlineKeyboardButton(text=weekday, callback_data="noop", style="primary")
@@ -60,15 +62,23 @@ def date_picker_keyboard(
             row.append(
                 InlineKeyboardButton(
                     text=str(day_number),
-                    callback_data=f"new:date:{candidate:%Y%m%d}",
+                    callback_data=f"{callback_prefix}:date:{candidate:%Y%m%d}",
                     style="success" if candidate in selected_days else None,
                 )
             )
         rows.append(row)
 
     rows.append(
-        [InlineKeyboardButton(text="Continue", callback_data="new:dates:done", style="success")]
+        [
+            InlineKeyboardButton(
+                text="Continue", callback_data=f"{callback_prefix}:dates:done", style="success"
+            )
+        ]
     )
+    if cancel_callback is not None:
+        rows.append(
+            [InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -93,6 +103,8 @@ def time_range_keyboard(
     end_hour: int,
     *,
     pending_start_hour: int | None = None,
+    callback_prefix: str = "new",
+    cancel_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for first_hour in range(0, 24, 4):
@@ -103,17 +115,25 @@ def time_range_keyboard(
                 style = "primary"
             row.append(
                 InlineKeyboardButton(
-                    text=f"{hour:02d}", callback_data=f"new:time:{hour}", style=style
+                    text=f"{hour:02d}", callback_data=f"{callback_prefix}:time:{hour}", style=style
                 )
             )
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="24", callback_data="new:time:24")])
+    rows.append([InlineKeyboardButton(text="24", callback_data=f"{callback_prefix}:time:24")])
     rows.append(
         [
-            InlineKeyboardButton(text="Reset", callback_data="new:time:reset", style="danger"),
-            InlineKeyboardButton(text="Continue", callback_data="new:time:done", style="success"),
+            InlineKeyboardButton(
+                text="Reset", callback_data=f"{callback_prefix}:time:reset", style="danger"
+            ),
+            InlineKeyboardButton(
+                text="Continue", callback_data=f"{callback_prefix}:time:done", style="success"
+            ),
         ]
     )
+    if cancel_callback is not None:
+        rows.append(
+            [InlineKeyboardButton(text="Cancel", callback_data=cancel_callback, style="danger")]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -132,6 +152,12 @@ def event_preview_keyboard(token: str) -> InlineKeyboardMarkup:
                 ),
                 InlineKeyboardButton(
                     text="View responses", callback_data=f"event:responses:{token}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="Edit event", callback_data=f"event:edit:{token}"),
+                InlineKeyboardButton(
+                    text="Delete event", callback_data=f"event:delete:{token}", style="danger"
                 ),
             ],
         ]
@@ -162,6 +188,45 @@ def organizer_events_keyboard(events: Sequence[_EventInfo]) -> InlineKeyboardMar
             ]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def event_edit_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Title", callback_data=f"event:edit:title:{token}")],
+            [InlineKeyboardButton(text="Dates", callback_data=f"event:edit:dates:{token}")],
+            [InlineKeyboardButton(text="Hours", callback_data=f"event:edit:time:{token}")],
+            [
+                InlineKeyboardButton(
+                    text="Reply notification", callback_data=f"event:edit:target:{token}"
+                )
+            ],
+            [InlineKeyboardButton(text="Back", callback_data=f"event:manage:{token}")],
+        ]
+    )
+
+
+def event_delete_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Delete event",
+                    callback_data=f"event:delete:confirm:{token}",
+                    style="danger",
+                ),
+                InlineKeyboardButton(text="Keep event", callback_data=f"event:manage:{token}"),
+            ]
+        ]
+    )
+
+
+def event_edit_cancel_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Cancel", callback_data=f"event:edit:cancel:{token}")]
+        ]
+    )
 
 
 def format_selected_days(days: Sequence[date]) -> str:

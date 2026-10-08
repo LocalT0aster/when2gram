@@ -15,7 +15,7 @@ The project is intentionally Telegram-first: organizers create an event in the b
 - `uv` for dependency management
 - single-container `compose.yml` deployment
 
-The current implementation includes the domain model, SQLite schema/migrations, an event-relative availability representation of up to 96 quarter-hour slots per day, and a private-chat `/new` wizard for creating events. Organizers choose an hourly event window, record their own availability before sharing, can edit it later from the preview, and can view aggregate participant responses in a tap-to-inspect grid. `/events` lists an organizer's upcoming events for quick access to management controls, expired events are deleted automatically, and availability for passed days cannot be submitted.
+The current implementation includes the domain model, SQLite schema/migrations, an event-relative availability representation of up to 96 quarter-hour slots per day, and a private-chat `/new` wizard for creating events. Organizers choose an hourly event window, record their own availability before sharing, and can edit an event's title, dates, hours, or reply notification from its preview. Schedule edits reset submitted availability, while an organizer-only confirmation flow permanently deletes an event. Participants can view aggregate responses in a tap-to-inspect grid. `/events` lists an organizer's upcoming events for quick access to management controls, expired events are deleted automatically, and availability for passed days cannot be submitted.
 
 ## Architecture
 

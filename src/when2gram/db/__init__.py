@@ -2,6 +2,7 @@ from .models import AvailabilityDay, Base, Event, EventDay, InlineInvite, Respon
 from .repositories import (
     claim_due_target_notifications,
     create_event,
+    delete_event,
     delete_expired_events,
     event_is_expired,
     get_event_availability_masks,
@@ -14,6 +15,7 @@ from .repositories import (
     get_user_availability_masks,
     save_submitted_availability,
     submitted_response_count,
+    update_event,
     upsert_user,
     withdraw_submitted_availability,
 )
@@ -29,6 +31,7 @@ __all__ = [
     "User",
     "create_engine",
     "create_event",
+    "delete_event",
     "delete_expired_events",
     "event_is_expired",
     "claim_due_target_notifications",
@@ -44,5 +47,6 @@ __all__ = [
     "save_submitted_availability",
     "submitted_response_count",
     "upsert_user",
+    "update_event",
     "withdraw_submitted_availability",
 ]
