@@ -19,6 +19,7 @@ from when2gram.bot.keyboards.event_creation import (
 )
 from when2gram.bot.routers.event_creation import (
     NewEvent,
+    _invitation_start_target,
     _response_target_from_text,
     _toggle_cross_day_range,
     begin_new_event,
@@ -122,8 +123,16 @@ async def test_inline_query_returns_an_event_invitation(monkeypatch) -> None:
     result = inline_query.answer.await_args.args[0][0]
     assert result.id == "event:opaque-token"
     assert result.reply_markup.inline_keyboard[0][0].url == (
+        "https://t.me/when2grambot?start=responses_opaque-token"
+    )
+    assert result.reply_markup.inline_keyboard[1][0].url == (
         "https://t.me/when2grambot?start=opaque-token"
     )
+
+
+def test_invitation_response_link_opens_the_read_only_view() -> None:
+    assert _invitation_start_target("responses_opaque-token") == ("opaque-token", True)
+    assert _invitation_start_target("opaque-token") == ("opaque-token", False)
 
 
 def test_date_picker_marks_selection_and_disables_past_days() -> None:

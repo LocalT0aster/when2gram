@@ -31,8 +31,12 @@ def invitation_content(
     hours = f"{event.start_minute // 60:02d}:00 - {event.end_minute // 60:02d}:00"
     message_text = f"{event.title}\n{dates}\n{hours}\n\n{response_count} replied"
     deep_link = f"https://t.me/{bot_username}?start={event.token}"
+    responses_link = f"https://t.me/{bot_username}?start=responses_{event.token}"
     markup = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Mark my availability", url=deep_link)]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="View responses", url=responses_link)],
+            [InlineKeyboardButton(text="Mark my availability", url=deep_link)],
+        ]
     )
     return message_text, f"{dates}, {hours} - {response_count} replied", markup
 
