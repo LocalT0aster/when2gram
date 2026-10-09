@@ -1826,7 +1826,6 @@ def _event_preview_text(
         "No organizer notification" if target is None else f"Notify after {target} replies"
     )
     return (
-        f"Event created\n\n{title}\n{format_selected_days(days)}\n"
+        f"{title}\n{format_selected_days(days)}\n"
         f"{start_hour:02d}:00 - {end_hour:02d}:00\n{notification}"
-        "\n\nShare it when ready."
     )
