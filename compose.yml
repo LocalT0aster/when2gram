@@ -1,8 +1,21 @@
 services:
   bot:
+    image: ${WHEN2GRAM_IMAGE:-when2gram-bot:latest}
     build: .
+    init: true
     restart: unless-stopped
     env_file: .env
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
     volumes:
       - when2gram-data:/data
 
