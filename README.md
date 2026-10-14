@@ -69,6 +69,38 @@ docker compose up -d --build
 
 The SQLite database is persisted in the named `when2gram-data` volume at `/data/when2gram.db`. Long polling is used, so no inbound port, reverse proxy, or TLS setup is required.
 
+The multi-stage image uses `python:3.14-alpine` and build-only `uv:0.11.14`
+version tags. To pick up base-image and Alpine package updates, rebuild with:
+
+```bash
+docker compose build --pull --no-cache
+docker compose up -d
+```
+
+The publish workflow uses the same fresh-build settings. Python dependencies
+remain locked by `uv.lock`.
+
+The image starts as UID/GID `10001:10001`, with root-owned application files.
+Compose drops all capabilities, enables `no-new-privileges`, and mounts the root
+filesystem read-only. `/data` is persistent; `/tmp` is a temporary writable mount.
+New named volumes inherit `/data` ownership from the image.
+
+### Migrating an existing root-owned volume
+
+Older deployments may have a root-owned database. Stop the bot and fix ownership
+once before starting the non-root image. This uses a temporary maintenance
+container; the bot itself never starts as root or repairs permissions:
+
+```bash
+docker compose stop bot
+docker compose run --rm --no-deps --user 0:0 --cap-add CHOWN bot \
+  chown -R 10001:10001 /data
+docker compose up -d
+```
+
+For bind mounts, set the host directory and database files' owner to UID/GID
+`10001:10001` instead.
+
 ## Planned implementation order
 
 1. Validate the availability grid and event-creation wizard on Telegram mobile and desktop clients.
