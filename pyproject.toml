@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "when2gram"
-version = "0.1.0"
+version = "0.1.2"
 description = "Telegram-native When2Meet-style scheduling bot"
 readme = "README.md"
 requires-python = ">=3.14"

@@ -2,6 +2,7 @@ from datetime import date
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
@@ -190,7 +191,11 @@ async def return_to_organized_events(
         return
     text, markup = await _organized_events_content(session_factory, callback.from_user.id)
     await state.clear()
-    await callback.message.edit_text(text, reply_markup=markup)
+    try:
+        await callback.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in error.message:
+            raise
     await callback.answer()
 
 

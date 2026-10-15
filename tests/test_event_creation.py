@@ -2,9 +2,11 @@ from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.methods import EditMessageText
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +29,7 @@ from when2gram.bot.routers.event_creation import (
     list_organized_events,
     manage_organized_event,
     receive_title,
+    return_to_organized_events,
 )
 from when2gram.bot.routers.inline import event_invitation_query, refresh_inline_invitations
 from when2gram.db.models import AvailabilityDay, Base, Event, EventDay, Response, User
@@ -87,6 +90,60 @@ async def test_title_input_is_deleted_and_reuses_the_creation_prompt() -> None:
     assert bot.edit_message_text.await_args.kwargs["text"].startswith("Select one or more dates")
     message.answer.assert_not_awaited()
     await storage.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_events", [False, True])
+@pytest.mark.parametrize(
+    "error_text", [None, "message is not modified", "message to edit not found"]
+)
+async def test_event_list_navigation_handles_only_unchanged_edits(
+    monkeypatch, has_events: bool, error_text: str | None
+) -> None:
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+    await state.set_state(NewEvent.title)
+    await state.set_data({"prompt_message_id": 99})
+    event = Event(
+        title="Planning",
+        token="opaque-token",
+        days=[EventDay(day=date.today() + timedelta(days=1))],
+    )
+    monkeypatch.setattr(
+        "when2gram.bot.routers.event_creation.get_organized_events",
+        AsyncMock(return_value=[event] if has_events else []),
+    )
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=MagicMock())
+    session_context.__aexit__ = AsyncMock(return_value=None)
+    session_factory = MagicMock(return_value=session_context)
+    callback = MagicMock()
+    callback.from_user.id = 42
+    callback.answer = AsyncMock()
+    error = (
+        TelegramBadRequest(
+            method=EditMessageText(chat_id=42, message_id=99, text="Your upcoming events:"),
+            message=f"Bad Request: {error_text}",
+        )
+        if error_text is not None
+        else None
+    )
+    callback.message.edit_text = AsyncMock(side_effect=error)
+
+    try:
+        if error_text == "message to edit not found":
+            with pytest.raises(TelegramBadRequest) as raised:
+                await return_to_organized_events(callback, state, session_factory)
+            assert raised.value is error
+            callback.answer.assert_not_awaited()
+        else:
+            await return_to_organized_events(callback, state, session_factory)
+            callback.answer.assert_awaited_once_with()
+        callback.message.edit_text.assert_awaited_once()
+        assert await state.get_state() is None
+        assert await state.get_data() == {}
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio

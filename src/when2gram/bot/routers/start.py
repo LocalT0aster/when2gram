@@ -18,3 +18,11 @@ async def start(message: Message) -> None:
 @router.callback_query(F.data == "noop")
 async def noop(callback: CallbackQuery) -> None:
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith(("new:", "edit:", "availability:", "responses:", "grid:")))
+async def expired_navigation(callback: CallbackQuery) -> None:
+    await callback.answer(
+        "This menu has expired. Send /start to open a fresh menu.",
+        show_alert=True,
+    )
