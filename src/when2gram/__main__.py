@@ -1,13 +1,14 @@
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from when2gram.bot.routers import event_creation_router, inline_router, start_router
+from when2gram.bot.widgets import WidgetDispatcher
 from when2gram.config import get_settings
 from when2gram.db import (
     claim_due_target_notifications,
@@ -47,7 +48,7 @@ async def main() -> None:
             BotCommand(command="events", description="Manage your events"),
         ]
     )
-    dispatcher = Dispatcher(storage=MemoryStorage())
+    dispatcher = WidgetDispatcher(storage=MemoryStorage())
     dispatcher["session_factory"] = session_factory
     dispatcher.include_router(event_creation_router)
     dispatcher.include_router(inline_router)
@@ -67,7 +68,8 @@ async def main() -> None:
             except TelegramAPIError:
                 logging.exception("Unable to send overdue response-target notification")
         cleanup_task = asyncio.create_task(_delete_expired_events_periodically(session_factory))
-        await dispatcher.start_polling(bot)
+        allowed = sorted(set(dispatcher.resolve_used_update_types()) | {"widget_query"})
+        await dispatcher.start_polling(bot, allowed_updates=allowed)
     finally:
         if cleanup_task is not None:
             cleanup_task.cancel()

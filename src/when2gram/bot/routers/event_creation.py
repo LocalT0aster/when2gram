@@ -31,6 +31,8 @@ from when2gram.bot.keyboards.event_creation import (
     time_range_keyboard,
 )
 from when2gram.bot.routers.inline import refresh_inline_invitations
+from when2gram.bot.widgets import send_availability_widget
+from when2gram.config import get_settings
 from when2gram.db.models import Event
 from when2gram.db.repositories import (
     create_event,
@@ -598,6 +600,7 @@ async def _start_event_availability(
     is_creating: bool,
     replace_message_id: int | None = None,
     bot: Bot | None = None,
+    use_widget: bool = True,
 ) -> None:
     selected_days = _read_selected_days(await state.get_data())
     if not selected_days:
@@ -607,6 +610,22 @@ async def _start_event_availability(
         await message.answer("That invitation is no longer available.")
         return
     user_id = message.chat.id
+    widget_bot = bot if bot is not None else message.bot
+    if (
+        get_settings().enable_widgets
+        and use_widget
+        and message.chat.type == ChatType.PRIVATE
+        and widget_bot is not None
+    ):
+        if await send_availability_widget(
+            widget_bot,
+            session_factory,
+            event,
+            user_id,
+            organizer=is_organizer,
+        ):
+            await state.clear()
+            return
     async with session_factory() as session:
         masks = await get_user_availability_masks(
             session,
@@ -1878,3 +1897,32 @@ def _event_preview_text(
         f"{title}\n{format_selected_days(days)}\n"
         f"{start_hour:02d}:00 - {end_hour:02d}:00\n{notification}"
     )
+
+
+@router.callback_query(F.data.regexp(r"^event:classic:[^:]+$"))
+async def classic_event_availability(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    if callback.message is None or callback.from_user is None or callback.data is None:
+        await callback.answer()
+        return
+    token = callback.data.removeprefix("event:classic:")
+    async with session_factory() as session:
+        event = await get_event_by_token(session, token)
+    if event is None or event_is_expired(event):
+        await callback.answer("Invitation expired.", show_alert=True)
+        return
+    await state.clear()
+    await _start_event_availability(
+        callback.message,
+        state,
+        event,
+        session_factory,
+        replace=False,
+        is_organizer=callback.from_user.id == event.organizer_id,
+        is_creating=False,
+        use_widget=False,
+    )
+    await callback.answer()

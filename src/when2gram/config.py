@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    enable_widgets: bool = Field(default=False, alias="ENABLE_WIDGETS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
